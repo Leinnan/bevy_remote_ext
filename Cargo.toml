@@ -1,0 +1,52 @@
+[package]
+name = "bevy_remote"
+version = "0.16.0"
+edition = "2024"
+description = "The Bevy Remote Protocol"
+homepage = "https://bevyengine.org"
+repository = "https://github.com/bevyengine/bevy"
+license = "MIT OR Apache-2.0"
+keywords = ["bevy"]
+
+[features]
+default = ["http", "documentation", "glam"]
+http = ["dep:async-io", "dep:smol-hyper"]
+documentation = ["bevy_reflect/documentation"]
+glam = ["dep:glam", "bevy_reflect/glam"]
+
+[dependencies]
+# bevy
+bevy_app = { version = "0.16.0" }
+bevy_log = "0.16.0"
+bevy_derive = { version = "0.16.0" }
+bevy_ecs = { version = "0.16.0", features = ["serialize"] }
+bevy_reflect = { version = "0.16.0" }
+bevy_tasks = { version = "0.16.0" }
+bevy_utils = { version = "0.16.0" }
+bevy_platform = { version = "0.16.0", default-features = false, features = [
+    "std",
+    "serialize",
+] }
+bevy_asset = { version = "0.16.0" }
+glam = { version = "0.29.3", default-features = false, features = [
+    "serde",
+], optional = true }
+# other
+anyhow = "1"
+hyper = { version = "1", features = ["server", "http1"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1" }
+http-body-util = "0.1"
+async-channel = "2"
+
+# dependencies that will not compile on wasm
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+async-io = { version = "2", optional = true }
+smol-hyper = { version = "0.1", optional = true }
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+rustdoc-args = ["-Zunstable-options", "--cfg", "docsrs"]
+all-features = true
