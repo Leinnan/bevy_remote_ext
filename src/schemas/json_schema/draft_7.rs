@@ -85,13 +85,47 @@ impl SchemaType {
 }
 
 #[derive(
-    Debug, Deserialize, Clone, PartialEq, Default, Reflect, Deref, Hash, Eq, Ord, PartialOrd,
+    Debug, Deserialize, Clone, Copy, PartialEq, Default, Reflect, Hash, Eq, Ord, PartialOrd,
 )]
-pub struct TypeReferencePath(#[serde(deserialize_with = "trim_definitions_prefix")] pub String);
+#[serde(rename_all = "lowercase")]
+pub enum ReferenceLocalization {
+    #[default]
+    /// used by json schema draft 7
+    Definitions,
+    /// used by OpenRPC
+    Components,
+}
 
+impl Display for ReferenceLocalization {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ReferenceLocalization::Definitions => write!(f, "#/definitions/"),
+            ReferenceLocalization::Components => write!(f, "#/components/"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Reflect, Hash, Eq, Ord, PartialOrd)]
+pub struct TypeReferencePath(pub String, pub ReferenceLocalization);
+
+impl TypeReferencePath {
+    pub fn definition(t: &Type) -> Self {
+        TypeReferencePath::new(t.path(), ReferenceLocalization::Definitions)
+    }
+    pub fn new(type_path: &str, l: ReferenceLocalization) -> Self {
+        TypeReferencePath(type_path.replace("::", "-"), l)
+    }
+    pub fn type_path(&self) -> String {
+        self.0.replace("-", "::")
+    }
+
+    pub fn change_localization(&mut self, new_localization: ReferenceLocalization) {
+        self.1 = new_localization;
+    }
+}
 impl Display for TypeReferencePath {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "#/definitions/{}", self.0)
+        write!(f, "{}{}", self.1, self.0)
     }
 }
 
@@ -103,44 +137,45 @@ impl Serialize for TypeReferencePath {
         serializer.serialize_str(&format!("{}", self))
     }
 }
-fn trim_definitions_prefix<'de, D>(deserializer: D) -> Result<String, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    struct TrimVisitor;
 
-    impl<'de> Visitor<'de> for TrimVisitor {
-        type Value = String;
+struct TypeReferencePathVisitor;
 
-        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-            formatter.write_str("a string starting with '#/definitions/' or a regular string")
-        }
+impl<'de> Visitor<'de> for TypeReferencePathVisitor {
+    type Value = TypeReferencePath;
 
-        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
-        where
-            E: de::Error,
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("an string with a '#' prefix")
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        if let Some(definition) =
+            value.strip_prefix(&ReferenceLocalization::Definitions.to_string())
         {
-            const PREFIX: &str = "#/definitions/";
-            if let Some(stripped) = value.strip_prefix(PREFIX) {
-                Ok(stripped.to_string())
-            } else {
-                Ok(value.to_string())
-            }
+            Ok(TypeReferencePath(
+                definition.to_string(),
+                ReferenceLocalization::Definitions,
+            ))
+        } else if let Some(component) =
+            value.strip_prefix(&ReferenceLocalization::Components.to_string())
+        {
+            Ok(TypeReferencePath(
+                component.to_string(),
+                ReferenceLocalization::Components,
+            ))
+        } else {
+            Err(E::custom("Invalid reference path"))
         }
     }
-
-    deserializer.deserialize_str(TrimVisitor)
 }
-
-impl From<&Type> for TypeReferencePath {
-    fn from(t: &Type) -> Self {
-        TypeReferencePath(t.path().replace("::", "-").into())
-    }
-}
-
-impl TypeReferencePath {
-    fn type_path(&self) -> String {
-        self.0.replace("-", "::")
+impl<'de> Deserialize<'de> for TypeReferencePath {
+    fn deserialize<D>(deserializer: D) -> Result<TypeReferencePath, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_str(TypeReferencePathVisitor)
     }
 }
 
@@ -156,6 +191,7 @@ pub enum JsonSchemaVariant {
     ConstNull,
     JsonValue(#[reflect(ignore)] Value),
 }
+
 #[derive(Deserialize, Serialize, Debug, Default, Reflect, PartialEq, Clone, Copy)]
 pub struct SchemaMarker;
 
@@ -268,6 +304,31 @@ impl JsonSchemaBasic {
         }
         types
     }
+    pub fn change_referenced_types_location(&mut self, location: ReferenceLocalization) {
+        if let Some(ref_type) = &mut self.ref_type {
+            ref_type.change_localization(location);
+        }
+        for prefix_item in &mut self.prefix_items {
+            prefix_item.change_referenced_types_location(location);
+        }
+        for item in &mut self.items {
+            item.change_referenced_types_location(location);
+        }
+        for (_, item) in &mut self.properties {
+            item.change_referenced_types_location(location);
+        }
+        for (_, item) in &mut self.definitions {
+            item.change_referenced_types_location(location);
+        }
+        for item in self.one_of.iter_mut() {
+            if let JsonSchemaVariant::Schema(schema) = item {
+                schema.change_referenced_types_location(location);
+            }
+        }
+        if let Some(JsonSchemaVariant::Schema(schema)) = &mut self.const_value {
+            schema.change_referenced_types_location(location);
+        }
+    }
     pub fn set_fixed_array(
         &mut self,
         fields: core::slice::Iter<'_, UnnamedField>,
@@ -308,12 +369,15 @@ impl JsonSchemaBasic {
     pub fn build(v: impl Into<JsonSchemaBasic>) -> Self {
         v.into()
     }
+
     pub fn build_json(v: impl Into<JsonSchemaBasic>) -> Value {
         v.into().to_value()
     }
+
     pub fn to_array_with_one_value(&self) -> Value {
         serde_json::to_value(vec![self]).unwrap_or_default()
     }
+
     pub fn to_value(&self) -> Value {
         serde_json::to_value(self).unwrap_or_default()
     }
@@ -344,7 +408,7 @@ impl JsonSchemaBasic {
                 }
             }
             None => Self {
-                ref_type: Some(t.into()),
+                ref_type: Some(TypeReferencePath::definition(t)),
                 description,
                 ..Default::default()
             },

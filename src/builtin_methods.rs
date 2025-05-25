@@ -31,9 +31,8 @@ use crate::{
         json_schema::{
             JsonSchemaBevyType,
             draft_7::{SchemaMarker, SchemaType},
-            export_type_json_schema,
         },
-        open_rpc::{MethodObject, OpenRpcDocument},
+        open_rpc::{OpenRpcBuilder, OpenRpcDocument},
     },
 };
 
@@ -918,56 +917,7 @@ impl RemoteCommandSupport for RpcDiscoverCommand {
 
         let app_type_registry = world.resource::<AppTypeRegistry>();
         let type_registry = app_type_registry.read();
-
-        let empty_type_id = ().type_id();
-        let methods = remote_methods
-            .0
-            .iter()
-            .map(|(path, id)| {
-                let mut method = MethodObject {
-                    name: path.clone(),
-                    ..default()
-                };
-                if let Some(typed_info) = id.remote_type_info() {
-                    if let Some(schema) = type_registry.get(typed_info.arg_type).and_then(|r| {
-                        export_type_json_schema(&type_registry, r.type_id(), &DataTypes::default())
-                    }) {
-                        if typed_info.arg_type != empty_type_id {
-                            method.params.push(schema.into());
-                        }
-                    };
-                    if let Some(schema) = type_registry.get(typed_info.command_type).and_then(|r| {
-                        export_type_json_schema(&type_registry, r.type_id(), &DataTypes::default())
-                    }) {
-                        method.description = schema.description;
-                    };
-
-                    if typed_info.response_type != empty_type_id {
-                        if let Some(schema) =
-                            type_registry.get(typed_info.response_type).and_then(|r| {
-                                export_type_json_schema(
-                                    &type_registry,
-                                    r.type_id(),
-                                    &DataTypes::default(),
-                                )
-                            })
-                        {
-                            method.result = Some(schema.into());
-                        };
-                    }
-                }
-
-                method
-            })
-            .collect();
-
-        let doc = OpenRpcDocument {
-            info: Default::default(),
-            methods,
-            openrpc: "1.3.2".to_owned(),
-            servers,
-        };
-        Ok(doc)
+        Ok((&*type_registry).build_open_rpc_schema(remote_methods, servers))
     }
 }
 /// Adds one or more components to an entity.
