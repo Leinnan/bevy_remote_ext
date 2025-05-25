@@ -1,22 +1,20 @@
 //! JSON Schema Draft 7 types
 //! [JSON Schema Draft 7](https://json-schema.org/draft-07/draft-handrews-json-schema-01)
 
-use core::fmt;
-use std::{
-    any::TypeId,
-    fmt::{Display, Formatter},
-};
-
-use bevy_derive::Deref;
 use bevy_platform::collections::{HashMap, HashSet};
 use bevy_reflect::{
     NamedField, Reflect, Type, TypeInfo, TypeRegistration, TypeRegistry, UnnamedField, VariantInfo,
 };
+use core::fmt;
 use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
     de::{self, Visitor},
 };
 use serde_json::Value;
+use std::{
+    any::TypeId,
+    fmt::{Display, Formatter},
+};
 
 use crate::ReflectSerializeAsArray;
 

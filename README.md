@@ -4,6 +4,12 @@ Custom version of bevy_remote package, with focus on better support of JSON Sche
 
 End goal is making it better support the standard and being able to use schemas in various IDEs for content validation.
 
+To use this package, add it to your `Cargo.toml` file (remember to remove the original `bevy_remote` dependency/feature):
+
+```toml
+[dependencies]
+bevy_remote = {git = "https://github.com/Leinnan/bevy_remote_ext.git"}
+```
 
 ## Using
 
