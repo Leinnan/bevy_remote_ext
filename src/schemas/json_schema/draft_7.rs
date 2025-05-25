@@ -177,17 +177,23 @@ impl<'de> Deserialize<'de> for TypeReferencePath {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default, Reflect)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Reflect)]
+#[serde(untagged)]
 pub enum JsonSchemaVariant {
-    ConstString(String),
-    ConstNumber(f64),
-    ConstInteger(i64),
-    ConstBoolean(bool),
+    Const {
+        #[reflect(ignore)]
+        #[serde(rename = "const")]
+        value: Value,
+    },
     Schema(#[reflect(ignore)] Box<JsonSchemaBasic>),
-    #[default]
-    ConstNull,
-    JsonValue(#[reflect(ignore)] Value),
+}
+
+impl JsonSchemaVariant {
+    pub fn const_value(serializable: impl Serialize) -> Self {
+        Self::Const {
+            value: serde_json::to_value(serializable).unwrap_or_default(),
+        }
+    }
 }
 
 #[derive(Deserialize, Serialize, Debug, Default, Reflect, PartialEq, Clone, Copy)]
@@ -578,49 +584,45 @@ impl BasicTypeInfoBuilder for &TypeRegistry {
                     .push(Box::new(JsonSchemaBasic::build(&info.value_ty())));
             }
             TypeInfo::Enum(info) => {
-                let simple = info
+                basic_info.set_type(SchemaType::Object);
+                basic_info.one_of = info
                     .iter()
-                    .all(|variant| matches!(variant, VariantInfo::Unit(_)));
-                if simple {
-                    basic_info.set_type(SchemaType::String);
-                    basic_info.r#enum = info
-                        .variant_names()
-                        .iter()
-                        .map(|s| s.to_string())
-                        .collect::<Vec<_>>();
-                } else {
-                    basic_info.set_type(SchemaType::Object);
-                    basic_info.one_of = info
-                        .iter()
-                        .map(|variant| {
-                            let mut schema = JsonSchemaBasic {
-                                description: variant.to_description(),
-                                ..Default::default()
-                            };
-                            match variant {
-                                VariantInfo::Struct(struct_variant_info) => {
+                    .map(|variant| {
+                        let mut schema = JsonSchemaBasic {
+                            description: variant.to_description(),
+                            ..Default::default()
+                        };
+                        match variant {
+                            VariantInfo::Struct(struct_variant_info) => {
+                                schema.set_type(SchemaType::Object);
+                                schema.set_properties(struct_variant_info.iter());
+                            }
+                            VariantInfo::Tuple(info) => {
+                                // THIS is for cases like `struct Foo(i32);`.
+                                if info.field_len() == 1 {
                                     schema.set_type(SchemaType::Object);
-                                    schema.set_properties(struct_variant_info.iter());
-                                }
-                                VariantInfo::Tuple(tuple_variant_info) => {
+                                    let field = info.field_at(0).expect("SHOULD NOT HAPPENED");
+                                    let field_schema = field.into();
+                                    schema
+                                        .properties
+                                        .insert(info.name().to_string(), Box::new(field_schema));
+                                    schema.required.push(info.name().to_string());
+                                } else {
                                     schema.set_type(SchemaType::Array);
-                                    let length = Some(tuple_variant_info.field_len());
-                                    basic_info.set_fixed_array(
-                                        tuple_variant_info.iter(),
-                                        length,
-                                        length,
-                                    );
-                                }
-                                VariantInfo::Unit(unit_variant_info) => {
-                                    return JsonSchemaVariant::ConstString(
-                                        unit_variant_info.name().to_string(),
-                                    );
+                                    let length = Some(info.field_len());
+                                    schema.set_fixed_array(info.iter(), length, length);
                                 }
                             }
-                            JsonSchemaVariant::Schema(Box::new(schema))
-                        })
-                        .collect();
-                }
+                            VariantInfo::Unit(unit_variant_info) => {
+                                return JsonSchemaVariant::const_value(
+                                    unit_variant_info.name().to_string(),
+                                );
+                            }
+                        }
+
+                        JsonSchemaVariant::Schema(Box::new(schema))
+                    })
+                    .collect();
             }
             TypeInfo::Opaque(info) => {
                 if let Some(t) = SchemaType::try_get_primitive_type_from_type_id(info.type_id()) {

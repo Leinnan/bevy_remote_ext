@@ -538,4 +538,34 @@ mod tests {
         });
         assert_eq!(schema_as_value, value);
     }
+
+    #[test]
+    fn reflect_export_enum_serialization_check() {
+        /// TEST DOCS
+        #[derive(Reflect, Default, Deserialize, Serialize, Hash)]
+        #[reflect(Hash, Default)]
+        pub enum ParticleTextType {
+            #[default]
+            NoInfo,
+            LevelUp,
+            Damage(usize),
+            Gold(usize),
+        }
+
+        let atr = AppTypeRegistry::default();
+        {
+            let mut register = atr.write();
+            register.register::<ParticleTextType>();
+        }
+        let type_registry = atr.read();
+        let Some(schema) = export_type_json_schema(
+            &type_registry,
+            TypeId::of::<ParticleTextType>(),
+            &DataTypes::default(),
+        ) else {
+            panic!("Failed to export type");
+        };
+        let schema_as_value = serde_json::to_value(&schema).expect("Should serialize");
+        eprintln!("{:#?}", &schema_as_value);
+    }
 }
