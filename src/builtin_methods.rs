@@ -1286,11 +1286,20 @@ pub fn export_registry_types(In(params): In<Option<Value>>, world: &World) -> Br
     let types = types.read();
     let schemas = types
         .iter()
-        .flat_map(|e| {
-            crate::schemas::json_schema::export_type_json_schema(&types, e.type_id(), data_types)
-        })
-        .filter(|schema| {
-            if let Some(crate_name) = &schema.crate_name {
+        .filter(|type_reg| {
+            // EXTRA FILTER, not decided yet if gonna make it in the end
+            match type_reg.type_info() {
+                bevy_reflect::TypeInfo::Tuple(_) => return false,
+                bevy_reflect::TypeInfo::TupleStruct(_) => return false,
+                bevy_reflect::TypeInfo::List(_) => return false,
+                bevy_reflect::TypeInfo::Array(_) => return false,
+                bevy_reflect::TypeInfo::Map(_) => return false,
+                bevy_reflect::TypeInfo::Set(_) => return false,
+                _ => {}
+            }
+
+            let path_table = type_reg.type_info().type_path_table();
+            if let Some(crate_name) = &path_table.crate_name() {
                 if !filter.with_crates.is_empty()
                     && !filter.with_crates.iter().any(|c| crate_name.eq(c))
                 {
@@ -1302,6 +1311,16 @@ pub fn export_registry_types(In(params): In<Option<Value>>, world: &World) -> Br
                     return false;
                 }
             }
+
+            true
+        })
+        .flat_map(|e| {
+            let schema = crate::schemas::json_schema::export_type_json_schema(
+                &types,
+                e.type_id(),
+                data_types,
+            )?;
+
             if !filter.type_limit.with.is_empty()
                 && !filter
                     .type_limit
@@ -1309,7 +1328,7 @@ pub fn export_registry_types(In(params): In<Option<Value>>, world: &World) -> Br
                     .iter()
                     .any(|c| schema.reflect_types.iter().any(|cc| c.eq(cc)))
             {
-                return false;
+                return None;
             }
             if !filter.type_limit.without.is_empty()
                 && filter
@@ -1318,10 +1337,9 @@ pub fn export_registry_types(In(params): In<Option<Value>>, world: &World) -> Br
                     .iter()
                     .any(|c| schema.reflect_types.iter().any(|cc| c.eq(cc)))
             {
-                return false;
+                return None;
             }
-
-            true
+            Some(schema)
         })
         .collect::<Vec<JsonSchemaBevyType>>();
     let root_object = JsonSchemaBevyType {
