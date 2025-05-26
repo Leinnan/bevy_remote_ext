@@ -185,56 +185,6 @@ impl JsonSchemaBevyType {
             }
             TypeInfo::Enum(_info) => {
                 typed_schema.kind = SchemaKind::Enum;
-                // if typed_schema.schema_type.eq(&SchemaType::Object){
-
-                // }
-                // let simple = info
-                //     .iter()
-                //     .all(|variant| matches!(variant, VariantInfo::Unit(_)));
-                // if simple {
-                //     typed_schema.schema_type = SchemaType::String;
-                //     typed_schema.one_of = info
-                //         .variant_names()
-                //         .iter()
-                //         .flat_map(serde_json::to_value)
-                //         .collect::<Vec<_>>();
-                // } else {
-                //     typed_schema.schema_type = SchemaType::Object;
-                //     typed_schema.one_of = info
-                // .iter()
-                // .map(|variant| match variant {
-                //     VariantInfo::Struct(v) => json!({
-                //         "type": "object",
-                //         "kind": "Struct",
-                //         "typePath": format!("{}::{}", type_path, v.name()),
-                //         "shortPath": v.name(),
-                //         "properties": v
-                //             .iter()
-                //             .map(|field| (field.name().to_owned(), JsonSchemaBasic::build_json(field)))
-                //             .collect::<Map<_, _>>(),
-                //         "additionalProperties": false,
-                //         "required": v
-                //             .iter()
-                //             .filter(|field| !field.type_path().starts_with("core::option::Option"))
-                //             .map(NamedField::name)
-                //             .collect::<Vec<_>>(),
-                //     }),
-                //     VariantInfo::Tuple(v) => json!({
-                //         "type": "array",
-                //         "kind": "Tuple",
-                //         "typePath": format!("{}::{}", type_path, v.name()),
-                //         "shortPath": v.name(),
-                //         "prefixItems":
-                //         v.iter().map(JsonSchemaBasic::build_json).collect::<Vec<_>>(),
-                //         "items": false,
-                //     }),
-                //     VariantInfo::Unit(v) => json!({
-                //         "typePath": format!("{}::{}", type_path, v.name()),
-                //         "shortPath": v.name(),
-                //     }),
-                // })
-                // .collect::<Vec<_>>();
-                // }
             }
             TypeInfo::TupleStruct(_) => {
                 typed_schema.kind = SchemaKind::TupleStruct;
@@ -550,6 +500,7 @@ mod tests {
             LevelUp,
             Damage(usize),
             Gold(usize),
+            GoldWithExtra(usize, usize),
         }
 
         let atr = AppTypeRegistry::default();

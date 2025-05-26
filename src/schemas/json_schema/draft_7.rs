@@ -598,20 +598,24 @@ impl BasicTypeInfoBuilder for &TypeRegistry {
                                 schema.set_properties(struct_variant_info.iter());
                             }
                             VariantInfo::Tuple(info) => {
+                                schema.set_type(SchemaType::Object);
                                 // THIS is for cases like `struct Foo(i32);`.
-                                if info.field_len() == 1 {
-                                    schema.set_type(SchemaType::Object);
+                                let field_schema = if info.field_len() == 1 {
                                     let field = info.field_at(0).expect("SHOULD NOT HAPPENED");
-                                    let field_schema = field.into();
-                                    schema
-                                        .properties
-                                        .insert(info.name().to_string(), Box::new(field_schema));
-                                    schema.required.push(info.name().to_string());
+                                    field.into()
                                 } else {
-                                    schema.set_type(SchemaType::Array);
+                                    let mut field_schema = JsonSchemaBasic {
+                                        r#type: Some(SchemaType::Array),
+                                        ..Default::default()
+                                    };
                                     let length = Some(info.field_len());
-                                    schema.set_fixed_array(info.iter(), length, length);
-                                }
+                                    field_schema.set_fixed_array(info.iter(), length, length);
+                                    field_schema
+                                };
+                                schema
+                                    .properties
+                                    .insert(info.name().to_string(), Box::new(field_schema));
+                                schema.required.push(info.name().to_string());
                             }
                             VariantInfo::Unit(unit_variant_info) => {
                                 return JsonSchemaVariant::const_value(
