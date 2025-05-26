@@ -584,7 +584,8 @@ impl BasicTypeInfoBuilder for &TypeRegistry {
                     .push(Box::new(JsonSchemaBasic::build(&info.value_ty())));
             }
             TypeInfo::Enum(info) => {
-                basic_info.set_type(SchemaType::Object);
+                // Since we want to use oneOf and some of the variants may not have same type.
+                basic_info.r#type = None;
                 basic_info.one_of = info
                     .iter()
                     .map(|variant| {
@@ -593,9 +594,18 @@ impl BasicTypeInfoBuilder for &TypeRegistry {
                             ..Default::default()
                         };
                         match variant {
-                            VariantInfo::Struct(struct_variant_info) => {
+                            VariantInfo::Struct(info) => {
                                 schema.set_type(SchemaType::Object);
-                                schema.set_properties(struct_variant_info.iter());
+                                schema.required.push(info.name().to_string());
+                                let mut field_schema = JsonSchemaBasic {
+                                    r#type: Some(SchemaType::Object),
+                                    ..Default::default()
+                                };
+                                field_schema.set_properties(info.iter());
+
+                                schema
+                                    .properties
+                                    .insert(info.name().to_string(), Box::new(field_schema));
                             }
                             VariantInfo::Tuple(info) => {
                                 schema.set_type(SchemaType::Object);
@@ -629,9 +639,9 @@ impl BasicTypeInfoBuilder for &TypeRegistry {
                     .collect();
             }
             TypeInfo::Opaque(info) => {
-                if let Some(t) = SchemaType::try_get_primitive_type_from_type_id(info.type_id()) {
-                    basic_info.set_type(t);
-                }
+                basic_info =
+                    JsonSchemaBasic::from_type(info.ty(), type_reg.type_info().to_description());
+                basic_info.schema = Some(SchemaMarker);
             }
         }
         basic_info

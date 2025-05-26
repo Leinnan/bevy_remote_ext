@@ -501,6 +501,11 @@ mod tests {
             Damage(usize),
             Gold(usize),
             GoldWithExtra(usize, usize),
+            GoldAndDamage {
+                gold: usize,
+                level_up: Option<bool>,
+                damage: i32,
+            },
         }
 
         let atr = AppTypeRegistry::default();
@@ -518,5 +523,9 @@ mod tests {
         };
         let schema_as_value = serde_json::to_value(&schema).expect("Should serialize");
         eprintln!("{:#?}", &schema_as_value);
+        eprintln!(
+            "SCHEMA: {}",
+            serde_json::to_string_pretty(&schema).expect("Should serialize")
+        );
     }
 }
