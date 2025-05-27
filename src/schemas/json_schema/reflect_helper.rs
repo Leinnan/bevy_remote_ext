@@ -2,7 +2,7 @@
 
 use std::any::TypeId;
 
-use bevy_reflect::{NamedField, SetInfo, TypeInfo, UnnamedField, VariantInfo};
+use bevy_reflect::{NamedField, SetInfo, TupleVariantInfo, TypeInfo, UnnamedField, VariantInfo};
 
 /// Trait for reading documentation from reflection data.
 pub trait ReflectDocReader {
@@ -58,6 +58,13 @@ impl ReflectDocReader for UnnamedField {
 }
 
 impl ReflectDocReader for SetInfo {
+    #[cfg(feature = "documentation")]
+    fn get_docs(&self) -> Option<&str> {
+        self.docs()
+    }
+}
+
+impl ReflectDocReader for TupleVariantInfo {
     #[cfg(feature = "documentation")]
     fn get_docs(&self) -> Option<&str> {
         self.docs()

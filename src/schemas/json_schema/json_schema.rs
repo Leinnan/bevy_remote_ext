@@ -1,6 +1,7 @@
 //! JSON Schema Draft 7 types
 //! [JSON Schema Draft 7](https://json-schema.org/draft-07/draft-handrews-json-schema-01)
 
+use bevy_derive::Deref;
 use bevy_platform::collections::{HashMap, HashSet};
 use bevy_reflect::{
     NamedField, Reflect, Type, TypeInfo, TypeRegistration, TypeRegistry, UnnamedField, VariantInfo,
@@ -22,7 +23,7 @@ use super::reflect_helper::{MinMaxTypeReflectHelper, ReflectDocReader};
 
 /// Type of json schema
 /// More [here](https://json-schema.org/draft-07/draft-handrews-json-schema-01#rfc.section.4.2.1)
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default, Reflect)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Reflect)]
 #[serde(rename_all = "lowercase")]
 pub enum SchemaType {
     /// A string of Unicode code points, from the JSON "string" production.
@@ -44,7 +45,6 @@ pub enum SchemaType {
     Boolean,
 
     /// A JSON "null" production.
-    #[default]
     Null,
 }
 
@@ -86,7 +86,8 @@ impl SchemaType {
     Debug, Deserialize, Clone, Copy, PartialEq, Default, Reflect, Hash, Eq, Ord, PartialOrd,
 )]
 #[serde(rename_all = "lowercase")]
-pub enum ReferenceLocalization {
+/// Stores information about the location of a reference in a JSON schema.
+pub enum ReferenceLocation {
     #[default]
     /// used by json schema draft 7
     Definitions,
@@ -94,36 +95,89 @@ pub enum ReferenceLocalization {
     Components,
 }
 
-impl Display for ReferenceLocalization {
+impl Display for ReferenceLocation {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            ReferenceLocalization::Definitions => write!(f, "#/definitions/"),
-            ReferenceLocalization::Components => write!(f, "#/components/"),
+            ReferenceLocation::Definitions => write!(f, "#/definitions/"),
+            ReferenceLocation::Components => write!(f, "#/components/"),
         }
     }
 }
 
+/// Stores information about the location and id of a reference in a JSON schema.
 #[derive(Debug, Clone, PartialEq, Default, Reflect, Hash, Eq, Ord, PartialOrd)]
-pub struct TypeReferencePath(pub String, pub ReferenceLocalization);
+pub struct TypeReferencePath {
+    /// The location of the reference in the JSON schema.
+    pub localization: ReferenceLocation,
+    /// The id of the reference.
+    pub id: TypeReferenceId,
+}
+
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Default,
+    Reflect,
+    Deref,
+    Hash,
+    Eq,
+    Ord,
+    PartialOrd,
+    Serialize,
+    Deserialize,
+)]
+pub struct TypeReferenceId(String);
+
+impl Display for TypeReferenceId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl TypeReferenceId {
+    /// Returns the type path of the reference.
+    pub fn type_path(&self) -> String {
+        self.replace("-", "::")
+    }
+}
+
+impl From<&Type> for TypeReferenceId {
+    fn from(t: &Type) -> Self {
+        TypeReferenceId(t.path().replace("::", "-"))
+    }
+}
+impl From<&str> for TypeReferenceId {
+    fn from(t: &str) -> Self {
+        TypeReferenceId(t.replace("::", "-"))
+    }
+}
 
 impl TypeReferencePath {
-    pub fn definition(t: &Type) -> Self {
-        TypeReferencePath::new(t.path(), ReferenceLocalization::Definitions)
+    /// Creates a new TypeReferencePath with the given type path at the Definitions location.
+    pub fn definition(id: impl Into<TypeReferenceId>) -> Self {
+        TypeReferencePath::new_ref(ReferenceLocation::Definitions, id)
     }
-    pub fn new(type_path: &str, l: ReferenceLocalization) -> Self {
-        TypeReferencePath(type_path.replace("::", "-"), l)
-    }
-    pub fn type_path(&self) -> String {
-        self.0.replace("-", "::")
+    /// Creates a new TypeReferencePath with the given location and type path.
+    pub fn new_ref<I: Into<TypeReferenceId>>(localization: ReferenceLocation, id: I) -> Self {
+        TypeReferencePath {
+            localization,
+            id: id.into(),
+        }
     }
 
-    pub fn change_localization(&mut self, new_localization: ReferenceLocalization) {
-        self.1 = new_localization;
+    /// Returns the type path of the reference.
+    pub fn type_path(&self) -> String {
+        self.id.replace("-", "::")
+    }
+
+    pub fn change_localization(&mut self, new_localization: ReferenceLocation) {
+        self.localization = new_localization;
     }
 }
 impl Display for TypeReferencePath {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}{}", self.1, self.0)
+        write!(f, "{}{}", self.localization, self.id)
     }
 }
 
@@ -149,19 +203,17 @@ impl<'de> Visitor<'de> for TypeReferencePathVisitor {
     where
         E: de::Error,
     {
-        if let Some(definition) =
-            value.strip_prefix(&ReferenceLocalization::Definitions.to_string())
-        {
-            Ok(TypeReferencePath(
-                definition.to_string(),
-                ReferenceLocalization::Definitions,
+        if let Some(definition) = value.strip_prefix(&ReferenceLocation::Definitions.to_string()) {
+            Ok(TypeReferencePath::new_ref(
+                ReferenceLocation::Definitions,
+                definition,
             ))
         } else if let Some(component) =
-            value.strip_prefix(&ReferenceLocalization::Components.to_string())
+            value.strip_prefix(&ReferenceLocation::Components.to_string())
         {
-            Ok(TypeReferencePath(
-                component.to_string(),
-                ReferenceLocalization::Components,
+            Ok(TypeReferencePath::new_ref(
+                ReferenceLocation::Components,
+                component,
             ))
         } else {
             Err(E::custom("Invalid reference path"))
@@ -206,7 +258,7 @@ pub(crate) fn serialize_schema_url<S>(
 where
     S: Serializer,
 {
-    serializer.serialize_str("https://json-schema.org/draft-07/schema")
+    serializer.serialize_str("https://json-schema.org/draft/2020-12/schema")
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default, Reflect)]
@@ -277,11 +329,26 @@ pub struct JsonSchemaBasic {
     pub const_value: Option<JsonSchemaVariant>,
     #[serde(skip_serializing_if = "HashMap::is_empty", default)]
     #[reflect(ignore)]
-    pub definitions: HashMap<String, Box<JsonSchemaBasic>>,
+    pub definitions: HashMap<TypeReferenceId, Box<JsonSchemaBasic>>,
 }
 
-impl JsonSchemaBasic {
-    pub fn get_referenced_types(&self) -> HashSet<TypeReferencePath> {
+pub trait SchemaDefinitionsHelper {
+    fn get_missing_definitions(&self) -> HashSet<TypeReferencePath> {
+        let referenced_types = self.get_referenced_types();
+        let definitions = self.get_definitions();
+        referenced_types
+            .iter()
+            .filter(|reference| definitions.contains_key(&reference.id))
+            .cloned()
+            .collect()
+    }
+    fn get_referenced_types(&self) -> HashSet<TypeReferencePath>;
+    fn get_definitions(&self) -> &HashMap<TypeReferenceId, Box<JsonSchemaBasic>>;
+    fn add_definitions(&mut self, definitions: HashMap<TypeReferenceId, Box<JsonSchemaBasic>>);
+}
+
+impl SchemaDefinitionsHelper for JsonSchemaBasic {
+    fn get_referenced_types(&self) -> HashSet<TypeReferencePath> {
         let mut types = HashSet::new();
         if let Some(ref_type) = &self.ref_type {
             types.insert(ref_type.clone());
@@ -308,7 +375,30 @@ impl JsonSchemaBasic {
         }
         types
     }
-    pub fn change_referenced_types_location(&mut self, location: ReferenceLocalization) {
+
+    fn get_definitions(&self) -> &HashMap<TypeReferenceId, Box<JsonSchemaBasic>> {
+        &self.definitions
+    }
+
+    fn add_definitions(&mut self, definitions: HashMap<TypeReferenceId, Box<JsonSchemaBasic>>) {
+        self.definitions.extend(definitions);
+    }
+}
+
+impl JsonSchemaBasic {
+    pub fn add_property(
+        &mut self,
+        name: impl Into<String>,
+        value: JsonSchemaBasic,
+        required: bool,
+    ) {
+        let name = name.into();
+        if required {
+            self.required.push(name.clone());
+        }
+        self.properties.insert(name, Box::new(value));
+    }
+    pub fn change_referenced_types_location(&mut self, location: ReferenceLocation) {
         if let Some(ref_type) = &mut self.ref_type {
             ref_type.change_localization(location);
         }
@@ -343,15 +433,49 @@ impl JsonSchemaBasic {
         self.required.clear();
         self.items.clear();
         self.prefix_items.clear();
-        self.prefix_items = fields
-            .map(|f| Box::new(JsonSchemaBasic::build(f)))
-            .collect::<Vec<_>>();
-        self.max_items = max_items;
-        self.min_items = min_items;
+
+        // THIS is for cases like `struct Foo(i32);`.
+        if fields.len() == 1 {
+            let field = fields.last().unwrap();
+            let field_schema = field.into();
+            *self = JsonSchemaBasic {
+                description: self.description.clone(),
+                ..field_schema
+            };
+            return;
+        } else {
+            self.set_items_fields(fields.map(JsonSchemaBasic::build).collect::<Vec<_>>());
+            self.max_items = max_items;
+            self.min_items = min_items;
+        }
     }
+
+    pub fn set_items_fields(&mut self, items: Vec<JsonSchemaBasic>) {
+        // makes sense when all items are the same
+        let only_item = if items.len() > 1 {
+            let first = items.first().expect("");
+            if items.iter().all(|item| item == first) {
+                Some(first)
+            } else {
+                None
+            }
+        } else {
+            items.first()
+        };
+        self.set_type(SchemaType::Array);
+        if let Some(only_item) = only_item {
+            self.prefix_items.clear();
+            self.items = vec![Box::new(only_item.clone())];
+        } else {
+            self.items.clear();
+            self.prefix_items = items.iter().map(|item| Box::new(item.clone())).collect();
+        }
+    }
+
     pub fn set_properties(&mut self, fields: core::slice::Iter<'_, NamedField>) {
         self.properties.clear();
         self.required.clear();
+        self.set_type(SchemaType::Object);
         for field in fields {
             let data = if let Some(type_info) = field
                 .type_info()
@@ -486,7 +610,7 @@ impl From<(Option<&TypeInfo>, Type)> for JsonSchemaBasic {
 pub trait BasicTypeInfoBuilder {
     fn build_json_schema(&self, t: TypeId) -> Option<JsonSchemaBasic>;
     fn build_json_schema_from_type_path(&self, type_path: &str) -> Option<JsonSchemaBasic>;
-    fn add_definitions(&self, basic_info: &JsonSchemaBasic) -> JsonSchemaBasic;
+    fn build_with_definitions<T: SchemaDefinitionsHelper + Clone>(&self, basic_info: &T) -> T;
     fn build_json_schema_from_reg(&self, type_reg: &TypeRegistration) -> JsonSchemaBasic;
 }
 
@@ -508,25 +632,16 @@ impl BasicTypeInfoBuilder for &TypeRegistry {
         };
         if type_reg.data::<ReflectSerializeAsArray>().is_some() {
             if let Ok(struct_info) = type_reg.type_info().as_struct() {
-                basic_info.set_type(SchemaType::Array);
-                let items: Vec<Box<JsonSchemaBasic>> = struct_info
+                let items: Vec<JsonSchemaBasic> = struct_info
                     .iter()
                     .map(|field| {
                         let mut value = JsonSchemaBasic::build(field);
                         value.description = Some(field.name().to_string());
-                        Box::new(value)
+                        value
                     })
                     .collect();
                 let length = items.len();
-                let same_items = items
-                    .first()
-                    .and_then(|first| Some(items.iter().all(|x| x == first)))
-                    .unwrap_or_default();
-                if same_items {
-                    basic_info.items.push(items[0].clone());
-                } else {
-                    basic_info.prefix_items = items;
-                }
+                basic_info.set_items_fields(items);
                 basic_info.min_items = length.into();
                 basic_info.max_items = length.into();
                 return basic_info;
@@ -535,26 +650,14 @@ impl BasicTypeInfoBuilder for &TypeRegistry {
 
         match type_reg.type_info() {
             TypeInfo::Struct(struct_info) => {
-                basic_info.set_type(SchemaType::Object);
                 basic_info.additional_properties = Some(false);
                 basic_info.set_properties(struct_info.iter());
             }
             TypeInfo::TupleStruct(info) => {
-                // THIS is for cases like `struct Foo(i32);`.
-                if info.field_len() == 1 {
-                    let field = info.field_at(0).expect("SHOULD NOT HAPPENED");
-                    let field_schema = field.into();
-                    return JsonSchemaBasic {
-                        description: basic_info.description,
-                        ..field_schema
-                    };
-                }
-                basic_info.set_type(SchemaType::Array);
                 let length = Some(info.field_len());
                 basic_info.set_fixed_array(info.iter(), length, length);
             }
             TypeInfo::Tuple(info) => {
-                basic_info.set_type(SchemaType::Array);
                 basic_info.set_fixed_array(
                     info.iter(),
                     Some(info.field_len()),
@@ -562,18 +665,16 @@ impl BasicTypeInfoBuilder for &TypeRegistry {
                 );
             }
             TypeInfo::List(info) => {
-                basic_info.set_type(SchemaType::Array);
-                basic_info.items.push(Box::new(JsonSchemaBasic::build((
+                basic_info.set_items_fields(vec![JsonSchemaBasic::build((
                     info.item_info(),
                     info.item_ty(),
-                ))));
+                ))]);
             }
             TypeInfo::Array(info) => {
-                basic_info.set_type(SchemaType::Array);
-                basic_info.items.push(Box::new(JsonSchemaBasic::build((
+                basic_info.set_items_fields(vec![JsonSchemaBasic::build((
                     info.item_info(),
                     info.item_ty(),
-                ))));
+                ))]);
                 basic_info.max_items = Some(info.capacity());
             }
             TypeInfo::Map(_map_info) => {}
@@ -589,50 +690,30 @@ impl BasicTypeInfoBuilder for &TypeRegistry {
                 basic_info.one_of = info
                     .iter()
                     .map(|variant| {
-                        let mut schema = JsonSchemaBasic {
-                            description: variant.to_description(),
-                            ..Default::default()
-                        };
-                        match variant {
+                        let property = match variant {
                             VariantInfo::Struct(info) => {
-                                schema.set_type(SchemaType::Object);
-                                schema.required.push(info.name().to_string());
                                 let mut field_schema = JsonSchemaBasic {
                                     r#type: Some(SchemaType::Object),
                                     ..Default::default()
                                 };
                                 field_schema.set_properties(info.iter());
-
-                                schema
-                                    .properties
-                                    .insert(info.name().to_string(), Box::new(field_schema));
+                                field_schema
                             }
                             VariantInfo::Tuple(info) => {
-                                schema.set_type(SchemaType::Object);
-                                // THIS is for cases like `struct Foo(i32);`.
-                                let field_schema = if info.field_len() == 1 {
-                                    let field = info.field_at(0).expect("SHOULD NOT HAPPENED");
-                                    field.into()
-                                } else {
-                                    let mut field_schema = JsonSchemaBasic {
-                                        r#type: Some(SchemaType::Array),
-                                        ..Default::default()
-                                    };
-                                    let length = Some(info.field_len());
-                                    field_schema.set_fixed_array(info.iter(), length, length);
-                                    field_schema
-                                };
-                                schema
-                                    .properties
-                                    .insert(info.name().to_string(), Box::new(field_schema));
-                                schema.required.push(info.name().to_string());
+                                info.iter().build_json_schema(info.to_description())
                             }
                             VariantInfo::Unit(unit_variant_info) => {
                                 return JsonSchemaVariant::const_value(
                                     unit_variant_info.name().to_string(),
                                 );
                             }
-                        }
+                        };
+                        let mut schema = JsonSchemaBasic {
+                            description: variant.to_description(),
+                            r#type: Some(SchemaType::Object),
+                            ..Default::default()
+                        };
+                        schema.add_property(variant.name(), property, true);
 
                         JsonSchemaVariant::Schema(Box::new(schema))
                     })
@@ -644,35 +725,48 @@ impl BasicTypeInfoBuilder for &TypeRegistry {
                 basic_info.schema = Some(SchemaMarker);
             }
         }
+        basic_info.description = type_reg.type_info().to_description();
         basic_info
     }
-    fn add_definitions(&self, basic_info: &JsonSchemaBasic) -> JsonSchemaBasic {
-        let referenced_types = basic_info.get_referenced_types();
-        if basic_info.definitions.len() == basic_info.get_referenced_types().len() {
-            return basic_info.clone();
-        }
+    fn build_with_definitions<T: SchemaDefinitionsHelper + Clone>(&self, basic_info: &T) -> T {
+        let missing_definitions = basic_info.get_missing_definitions();
         let mut result = basic_info.clone();
-        let existing_definitions: Vec<&String> = basic_info.definitions.keys().collect();
-        let missing_defs_keys: Vec<TypeReferencePath> = referenced_types
-            .iter()
-            .flat_map(|key| {
-                if existing_definitions.iter().any(|t| t.eq(&&key.0)) {
-                    None
-                } else {
-                    Some(key.clone())
-                }
-            })
-            .collect();
-        for missing_def_key in missing_defs_keys {
-            let Some(type_reg) = self.get_with_type_path(&missing_def_key.type_path()) else {
-                continue;
-            };
-            let missing_def = self.build_json_schema_from_reg(type_reg);
-            result
-                .definitions
-                .insert(missing_def_key.0, Box::new(missing_def));
+        if missing_definitions.is_empty() {
+            return result;
         }
+        result.add_definitions(
+            missing_definitions
+                .iter()
+                .flat_map(|def| {
+                    let Some(type_reg) = self.get_with_type_path(&def.type_path()) else {
+                        return None;
+                    };
+                    Some((
+                        def.id.clone(),
+                        Box::new(self.build_json_schema_from_reg(type_reg)),
+                    ))
+                })
+                .collect::<HashMap<TypeReferenceId, Box<JsonSchemaBasic>>>(),
+        );
 
-        self.add_definitions(&result)
+        self.build_with_definitions(&result)
+    }
+}
+
+pub trait JsonSchemaBuilder {
+    fn build_json_schema(&self, documentation: Option<String>) -> JsonSchemaBasic {
+        let mut basic_info = JsonSchemaBasic::default();
+        basic_info.schema = Some(SchemaMarker);
+        basic_info.description = documentation;
+        self.feed_data(&mut basic_info);
+        basic_info
+    }
+    fn feed_data(&self, data: &mut JsonSchemaBasic);
+}
+
+impl JsonSchemaBuilder for core::slice::Iter<'_, UnnamedField> {
+    fn feed_data(&self, data: &mut JsonSchemaBasic) {
+        let length = Some(self.len());
+        data.set_fixed_array(self.clone(), length, length);
     }
 }

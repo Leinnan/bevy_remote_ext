@@ -27,10 +27,7 @@ use crate::{
     cmd::RemoteCommandSupport,
     error_codes,
     schemas::{
-        json_schema::{
-            JsonSchemaBevyType,
-            draft_7::{SchemaMarker, SchemaType},
-        },
+        json_schema::{JsonSchemaBevyType, json_schema::SchemaMarker},
         open_rpc::{OpenRpcBuilder, OpenRpcDocument},
     },
 };
@@ -1344,13 +1341,12 @@ pub fn export_registry_types(In(params): In<Option<Value>>, world: &World) -> Br
         .collect::<Vec<JsonSchemaBevyType>>();
     let root_object = JsonSchemaBevyType {
         schema: Some(SchemaMarker),
-        schema_type: SchemaType::Object,
         description: Some("Root object for the JSON schema".to_string()),
         definitions: schemas
             .iter()
             .map(|schema| {
                 (
-                    schema.type_path.replace("::", "-"),
+                    schema.type_path.as_str().into(),
                     Box::new(JsonSchemaBevyType {
                         schema: None,
                         ..schema.clone()

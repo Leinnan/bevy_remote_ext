@@ -4,14 +4,15 @@
 use crate::DataTypes;
 use bevy_platform::collections::HashMap;
 use bevy_reflect::{Reflect, TypeInfo, TypeRegistry};
-use draft_7::{
-    BasicTypeInfoBuilder, JsonSchemaBasic, SchemaMarker, SchemaType, serialize_schema_url,
+use json_schema::{
+    BasicTypeInfoBuilder, JsonSchemaBasic, SchemaMarker, SchemaType, TypeReferenceId,
+    serialize_schema_url,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::any::TypeId;
 
-pub mod draft_7;
+pub mod json_schema;
 pub mod reflect_helper;
 
 pub fn export_type_json_schema(
@@ -37,7 +38,7 @@ pub fn export_type_json_schema_with_definitions(
     data_types: &DataTypes,
 ) -> Option<JsonSchemaBevyType> {
     let base_schema = type_registry.build_json_schema(type_id)?;
-    let base_schema = type_registry.add_definitions(&base_schema);
+    let base_schema = type_registry.build_with_definitions(&base_schema);
 
     Some(JsonSchemaBevyType::build_from(
         type_id,
@@ -86,7 +87,8 @@ pub struct JsonSchemaBevyType {
     pub value_type: Option<Value>,
     /// The type keyword is fundamental to JSON Schema. It specifies the data type for a schema.
     #[serde(rename = "type")]
-    pub schema_type: SchemaType,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub schema_type: Option<SchemaType>,
     /// The behavior of this keyword depends on the presence and annotation results of "properties"
     /// and "patternProperties" within the same schema object.
     /// Validation with "additionalProperties" applies only to the child
@@ -155,7 +157,7 @@ pub struct JsonSchemaBevyType {
     pub minimum: Option<i64>,
     #[serde(skip_serializing_if = "HashMap::is_empty", default)]
     #[reflect(ignore)]
-    pub definitions: HashMap<String, Box<JsonSchemaBevyType>>,
+    pub definitions: HashMap<TypeReferenceId, Box<JsonSchemaBevyType>>,
 }
 impl JsonSchemaBevyType {
     pub fn build_from(
@@ -223,7 +225,7 @@ impl From<&JsonSchemaBasic> for JsonSchemaBevyType {
         };
         JsonSchemaBevyType {
             schema: value.schema.clone(),
-            schema_type: value.r#type.clone().unwrap_or_default(),
+            schema_type: value.r#type.clone(),
             additional_properties: value.additional_properties.clone(),
             properties: value
                 .properties
@@ -281,12 +283,14 @@ pub enum SchemaKind {
 #[cfg(test)]
 mod tests {
     use std::any::TypeId;
+    use std::fmt::Debug;
 
     use super::*;
     use bevy_ecs::reflect::{ReflectComponent, ReflectResource};
     use bevy_ecs::{component::Component, reflect::AppTypeRegistry, resource::Resource};
-    use bevy_reflect::Reflect;
+    use bevy_reflect::{GetTypeRegistration, Reflect};
     use bevy_reflect::{ReflectDeserialize, ReflectSerialize, prelude::ReflectDefault};
+    use serde::de::DeserializeOwned;
     use serde_json::json;
 
     #[test]
@@ -411,6 +415,14 @@ mod tests {
         #[derive(Reflect, Component, Default, Deserialize, Serialize)]
         #[reflect(Component, Default, Serialize, Deserialize)]
         struct TupleStructType(usize, i32);
+        test_against_json_schema::<TupleStructType>(
+            &[TupleStructType(0, 0)],
+            &[
+                JsonSchemaTest::should_pass("[0,15]"),
+                JsonSchemaTest::should_fail("[-11]"),
+                JsonSchemaTest::should_fail("[15,\"DDASD\"]"),
+            ],
+        );
 
         let atr = AppTypeRegistry::default();
         {
@@ -446,6 +458,7 @@ mod tests {
             /// THIS IS A FIELD
             a: i32,
         }
+        test_against_json_schema::<Foo>(&[Foo { a: 0 }, Foo { a: 1 }], &[]);
 
         let atr = AppTypeRegistry::default();
         {
@@ -461,15 +474,15 @@ mod tests {
         let schema_as_value = serde_json::to_value(&schema).expect("Should serialize");
         eprintln!("{:?}", &schema_as_value);
         let value = json!({
-          "$schema": "https://json-schema.org/draft-07/schema",
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
           "description": "TEST DOCS",
           "shortPath": "Foo",
           "typePath": "bevy_remote::schemas::json_schema::tests::Foo",
           "modulePath": "bevy_remote::schemas::json_schema::tests",
           "crateName": "bevy_remote",
           "reflectTypes": [
-            "Resource",
             "Default",
+            "Resource",
           ],
           "kind": "Struct",
           "type": "object",
@@ -486,13 +499,17 @@ mod tests {
             "a"
           ]
         });
-        assert_eq!(schema_as_value, value);
+
+        assert!(
+            schema_as_value.eq(&value),
+            "Schema does not match expected value"
+        );
     }
 
     #[test]
     fn reflect_export_enum_serialization_check() {
         /// TEST DOCS
-        #[derive(Reflect, Default, Deserialize, Serialize, Hash)]
+        #[derive(Reflect, Default, Deserialize, Serialize, Hash, Debug)]
         #[reflect(Hash, Default)]
         pub enum ParticleTextType {
             #[default]
@@ -500,32 +517,116 @@ mod tests {
             LevelUp,
             Damage(usize),
             Gold(usize),
-            GoldWithExtra(usize, usize),
+            GoldWithExtra(
+                /// THIS IS A FIRST UNNAMED FIELD
+                usize,
+                /// THIS IS A SECOND UNNAMED FIELD
+                usize,
+            ),
             GoldAndDamage {
                 gold: usize,
                 level_up: Option<bool>,
                 damage: i32,
             },
         }
+        test_against_json_schema::<ParticleTextType>(
+            &[
+                ParticleTextType::LevelUp,
+                ParticleTextType::Damage(10),
+                ParticleTextType::Gold(100),
+                ParticleTextType::GoldWithExtra(100, 200),
+                ParticleTextType::GoldAndDamage {
+                    gold: 100,
+                    level_up: Some(true),
+                    damage: 10,
+                },
+                ParticleTextType::GoldAndDamage {
+                    gold: 100,
+                    level_up: Some(false),
+                    damage: 10,
+                },
+            ],
+            &[],
+        );
+    }
 
+    pub struct JsonSchemaTest {
+        pub value: String,
+        pub should_pass: bool,
+    }
+    impl JsonSchemaTest {
+        /// Create a new test that should fail.
+        pub fn should_fail(value: impl Into<String>) -> Self {
+            Self {
+                value: value.into(),
+                should_pass: false,
+            }
+        }
+        /// Create a new test that should pass.
+        pub fn should_pass(value: impl Into<String>) -> Self {
+            Self {
+                value: value.into(),
+                should_pass: true,
+            }
+        }
+    }
+
+    fn test_against_json_schema<T: Reflect + GetTypeRegistration + DeserializeOwned + Serialize>(
+        values: &[T],
+        json_tests: &[JsonSchemaTest],
+    ) {
         let atr = AppTypeRegistry::default();
         {
             let mut register = atr.write();
-            register.register::<ParticleTextType>();
+            register.register::<T>();
         }
         let type_registry = atr.read();
-        let Some(schema) = export_type_json_schema(
-            &type_registry,
-            TypeId::of::<ParticleTextType>(),
-            &DataTypes::default(),
-        ) else {
+        let Some(schema) =
+            export_type_json_schema(&type_registry, TypeId::of::<T>(), &DataTypes::default())
+        else {
             panic!("Failed to export type");
         };
         let schema_as_value = serde_json::to_value(&schema).expect("Should serialize");
-        eprintln!("{:#?}", &schema_as_value);
-        eprintln!(
-            "SCHEMA: {}",
-            serde_json::to_string_pretty(&schema).expect("Should serialize")
-        );
+        let schema_string = serde_json::to_string_pretty(&schema).expect("Should serialize");
+        // eprintln!("{:#?}", &schema_as_value);
+        eprintln!("SCHEMA: {}", &schema_string);
+        let validator = jsonschema::options()
+            .with_draft(jsonschema::Draft::Draft202012)
+            .build(&schema_as_value)
+            .expect("Failed to build schema");
+        let errors = values
+            .iter()
+            .flat_map(|v| {
+                let json_val = serde_json::to_value(v).expect("Should serialize");
+                let result = validator.validate(&json_val);
+                if let Err(err) = result {
+                    Some(err.to_string())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+
+        assert!(errors.is_empty(), "Validation errors: {:?}", errors);
+
+        let errors = json_tests
+            .iter()
+            .flat_map(|test| {
+                let json_val = serde_json::from_str(&test.value).expect("Should serialize");
+                let result = validator.validate(&json_val);
+                eprintln!("JSON: {} -> {:?}", &json_val, result);
+                if test.should_pass != result.is_ok() {
+                    Some(format!(
+                        "Expected {} to {}",
+                        test.value,
+                        if test.should_pass { "pass" } else { "fail" }
+                    ))
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+
+        assert!(errors.is_empty(), "Serialization errors: {:?}", errors);
     }
 }

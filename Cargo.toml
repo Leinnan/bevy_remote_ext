@@ -39,6 +39,9 @@ serde_json = { version = "1" }
 http-body-util = "0.1"
 async-channel = "2"
 
+[dev-dependencies]
+jsonschema = "0.30.0"
+
 # dependencies that will not compile on wasm
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 async-io = { version = "2", optional = true }
