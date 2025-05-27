@@ -1340,7 +1340,7 @@ pub fn export_registry_types(In(params): In<Option<Value>>, world: &World) -> Br
         })
         .collect::<Vec<JsonSchemaBevyType>>();
     let root_object = JsonSchemaBevyType {
-        schema: Some(SchemaMarker),
+        schema: Some(SchemaMarker::default()),
         description: Some("Root object for the JSON schema".to_string()),
         definitions: schemas
             .iter()

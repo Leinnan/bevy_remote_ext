@@ -1,10 +1,11 @@
-//! JSON Schema Draft 7 types
-//! [JSON Schema Draft 7](https://json-schema.org/draft-07/draft-handrews-json-schema-01)
+//! JSON Schema Draft 2020-12 types
+//! [JSON Schema Draft 2020-12](https://json-schema.org/draft/2020-12/schema)
 
 use bevy_derive::Deref;
 use bevy_platform::collections::{HashMap, HashSet};
 use bevy_reflect::{
     NamedField, Reflect, Type, TypeInfo, TypeRegistration, TypeRegistry, UnnamedField, VariantInfo,
+    prelude::ReflectDefault, serde::ReflectSerializer,
 };
 use core::fmt;
 use serde::{
@@ -98,7 +99,7 @@ pub enum ReferenceLocation {
 impl Display for ReferenceLocation {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            ReferenceLocation::Definitions => write!(f, "#/definitions/"),
+            ReferenceLocation::Definitions => write!(f, "#/$defs/"),
             ReferenceLocation::Components => write!(f, "#/components/"),
         }
     }
@@ -240,6 +241,16 @@ pub enum JsonSchemaVariant {
     Schema(#[reflect(ignore)] Box<JsonSchemaBasic>),
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Reflect)]
+#[serde(untagged)]
+pub enum SchemaNumber {
+    PosInt(u64),
+    /// Always less than zero.
+    NegInt(i64),
+    /// Always finite.
+    Float(f64),
+}
+
 impl JsonSchemaVariant {
     pub fn const_value(serializable: impl Serialize) -> Self {
         Self::Const {
@@ -248,24 +259,20 @@ impl JsonSchemaVariant {
     }
 }
 
-#[derive(Deserialize, Serialize, Debug, Default, Reflect, PartialEq, Clone, Copy)]
-pub struct SchemaMarker;
+#[derive(Deserialize, Serialize, Debug, Reflect, PartialEq, Clone)]
+pub struct SchemaMarker(String);
 
-pub(crate) fn serialize_schema_url<S>(
-    _: &Option<SchemaMarker>,
-    serializer: S,
-) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-{
-    serializer.serialize_str("https://json-schema.org/draft/2020-12/schema")
+impl Default for SchemaMarker {
+    fn default() -> Self {
+        Self("https://json-schema.org/draft/2020-12/schema".to_string())
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default, Reflect)]
 #[serde(rename_all = "lowercase")]
 pub struct JsonSchemaBasic {
+    #[serde(rename = "$schema")]
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    #[serde(rename = "$schema", serialize_with = "serialize_schema_url")]
     pub schema: Option<SchemaMarker>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub r#type: Option<SchemaType>,
@@ -273,9 +280,9 @@ pub struct JsonSchemaBasic {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub ref_type: Option<TypeReferencePath>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub minimum: Option<i64>,
+    pub minimum: Option<SchemaNumber>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub maximum: Option<i64>,
+    pub maximum: Option<SchemaNumber>,
     /// Type description
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub description: Option<String>,
@@ -329,7 +336,12 @@ pub struct JsonSchemaBasic {
     pub const_value: Option<JsonSchemaVariant>,
     #[serde(skip_serializing_if = "HashMap::is_empty", default)]
     #[reflect(ignore)]
+    #[serde(rename = "$defs")]
     pub definitions: HashMap<TypeReferenceId, Box<JsonSchemaBasic>>,
+    /// Default value for the instance.
+    #[serde(rename = "default", skip_serializing_if = "Option::is_none", default)]
+    #[reflect(ignore)]
+    pub default_value: Option<Value>,
 }
 
 pub trait SchemaDefinitionsHelper {
@@ -338,7 +350,7 @@ pub trait SchemaDefinitionsHelper {
         let definitions = self.get_definitions();
         referenced_types
             .iter()
-            .filter(|reference| definitions.contains_key(&reference.id))
+            .filter(|reference| !definitions.contains_key(&reference.id))
             .cloned()
             .collect()
     }
@@ -625,11 +637,25 @@ impl BasicTypeInfoBuilder for &TypeRegistry {
     }
     fn build_json_schema_from_reg(&self, type_reg: &TypeRegistration) -> JsonSchemaBasic {
         let mut basic_info = JsonSchemaBasic {
-            schema: Some(SchemaMarker),
+            schema: Some(SchemaMarker::default()),
             description: type_reg.type_info().to_description(),
             r#type: Some(SchemaType::Object),
             ..Default::default()
         };
+        if let Some(data) = self.get_type_data::<ReflectDefault>(type_reg.type_id()) {
+            let default = data.default();
+            let serializer = ReflectSerializer::new(&*default, self);
+            if let Some(value_object) = serde_json::to_value(serializer)
+                .ok()
+                .and_then(|v| v.as_object().cloned())
+            {
+                if value_object.len() == 1 {
+                    if let Some((_, value)) = value_object.into_iter().next() {
+                        basic_info.default_value = Some(value);
+                    }
+                }
+            }
+        }
         if type_reg.data::<ReflectSerializeAsArray>().is_some() {
             if let Ok(struct_info) = type_reg.type_info().as_struct() {
                 let items: Vec<JsonSchemaBasic> = struct_info
@@ -722,7 +748,7 @@ impl BasicTypeInfoBuilder for &TypeRegistry {
             TypeInfo::Opaque(info) => {
                 basic_info =
                     JsonSchemaBasic::from_type(info.ty(), type_reg.type_info().to_description());
-                basic_info.schema = Some(SchemaMarker);
+                basic_info.schema = Some(SchemaMarker::default());
             }
         }
         basic_info.description = type_reg.type_info().to_description();
@@ -756,7 +782,7 @@ impl BasicTypeInfoBuilder for &TypeRegistry {
 pub trait JsonSchemaBuilder {
     fn build_json_schema(&self, documentation: Option<String>) -> JsonSchemaBasic {
         let mut basic_info = JsonSchemaBasic::default();
-        basic_info.schema = Some(SchemaMarker);
+        basic_info.schema = Some(SchemaMarker::default());
         basic_info.description = documentation;
         self.feed_data(&mut basic_info);
         basic_info

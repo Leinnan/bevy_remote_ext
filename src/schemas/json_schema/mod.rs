@@ -5,8 +5,7 @@ use crate::DataTypes;
 use bevy_platform::collections::HashMap;
 use bevy_reflect::{Reflect, TypeInfo, TypeRegistry};
 use json_schema::{
-    BasicTypeInfoBuilder, JsonSchemaBasic, SchemaMarker, SchemaType, TypeReferenceId,
-    serialize_schema_url,
+    BasicTypeInfoBuilder, JsonSchemaBasic, SchemaMarker, SchemaNumber, SchemaType, TypeReferenceId,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -55,8 +54,8 @@ pub fn export_type_json_schema_with_definitions(
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default, Reflect)]
 #[serde(rename_all = "camelCase")]
 pub struct JsonSchemaBevyType {
+    #[serde(rename = "$schema")]
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    #[serde(rename = "$schema", serialize_with = "serialize_schema_url")]
     pub schema: Option<SchemaMarker>,
     /// Bevy specific field, short path of the type.
     pub short_path: String,
@@ -148,16 +147,21 @@ pub struct JsonSchemaBevyType {
     /// If the instance is a number, then this keyword validates only
     /// if the instance is less than or exactly equal to "maximum".
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub maximum: Option<i64>,
+    pub maximum: Option<SchemaNumber>,
     /// The value of "minimum" MUST be a number,
     /// representing an inclusive lower limit for a numeric instance.
     /// If the instance is a number, then this keyword validates only
     /// if the instance is greater than or exactly equal to "minimum".
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub minimum: Option<i64>,
+    pub minimum: Option<SchemaNumber>,
     #[serde(skip_serializing_if = "HashMap::is_empty", default)]
     #[reflect(ignore)]
+    #[serde(rename = "$defs")]
     pub definitions: HashMap<TypeReferenceId, Box<JsonSchemaBevyType>>,
+    /// Default value for the instance.
+    #[serde(rename = "default", skip_serializing_if = "Option::is_none", default)]
+    #[reflect(ignore)]
+    pub default_value: Option<Value>,
 }
 impl JsonSchemaBevyType {
     pub fn build_from(
@@ -238,6 +242,7 @@ impl From<&JsonSchemaBasic> for JsonSchemaBevyType {
                 .map(|(k, v)| (k.clone(), Box::new((&**v).into())))
                 .collect(),
             required: value.required.clone(),
+            default_value: value.default_value.clone(),
             one_of: value
                 .one_of
                 .iter()
@@ -335,7 +340,7 @@ mod tests {
     }
 
     #[test]
-    fn reflect_export_enum() {
+    fn test_enum_component() {
         #[derive(Reflect, Component, Default, Deserialize, Serialize)]
         #[reflect(Component, Default, Serialize, Deserialize)]
         enum EnumComponent {
@@ -360,7 +365,6 @@ mod tests {
         ) else {
             panic!("Failed to export type");
         };
-        eprintln!("Schema: {:#?}", schema);
         assert!(
             schema.reflect_types.contains(&"Component".to_owned()),
             "Should be a component"
@@ -375,7 +379,8 @@ mod tests {
 
     #[test]
     fn reflect_export_struct_without_reflect_types() {
-        #[derive(Reflect, Component, Default, Deserialize, Serialize)]
+        #[derive(Reflect, Default, Deserialize, Serialize)]
+        #[reflect(Default, Serialize)]
         enum EnumComponent {
             ValueOne(i32),
             ValueTwo {
@@ -384,6 +389,17 @@ mod tests {
             #[default]
             NoValue,
         }
+
+        test_against_json_schema::<EnumComponent>(
+            &[EnumComponent::NoValue],
+            &[
+                JsonSchemaTest::should_pass("\"NoValue\""),
+                JsonSchemaTest::should_pass("{\"ValueOne\": 1}"),
+                JsonSchemaTest::should_pass("{\"ValueTwo\": {\"test\": 1}}"),
+                JsonSchemaTest::should_fail("[-11]"),
+                JsonSchemaTest::should_fail("[15,\"DDASD\"]"),
+            ],
+        );
 
         let atr = AppTypeRegistry::default();
         {
@@ -419,6 +435,7 @@ mod tests {
             &[TupleStructType(0, 0)],
             &[
                 JsonSchemaTest::should_pass("[0,15]"),
+                JsonSchemaTest::should_fail("[-11,15]"),
                 JsonSchemaTest::should_fail("[-11]"),
                 JsonSchemaTest::should_fail("[15,\"DDASD\"]"),
             ],
@@ -472,7 +489,7 @@ mod tests {
             panic!("Failed to export type");
         };
         let schema_as_value = serde_json::to_value(&schema).expect("Should serialize");
-        eprintln!("{:?}", &schema_as_value);
+        // eprintln!("{:?}", &schema_as_value);
         let value = json!({
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "description": "TEST DOCS",
@@ -480,6 +497,7 @@ mod tests {
           "typePath": "bevy_remote::schemas::json_schema::tests::Foo",
           "modulePath": "bevy_remote::schemas::json_schema::tests",
           "crateName": "bevy_remote",
+          "default": {"a": 0},
           "reflectTypes": [
             "Default",
             "Resource",
@@ -500,8 +518,8 @@ mod tests {
           ]
         });
 
-        assert!(
-            schema_as_value.eq(&value),
+        assert_eq!(
+            schema_as_value, value,
             "Schema does not match expected value"
         );
     }
