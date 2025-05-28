@@ -269,7 +269,7 @@ impl Default for SchemaMarker {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default, Reflect)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "camelCase")]
 pub struct JsonSchemaBasic {
     #[serde(rename = "$schema")]
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -286,9 +286,9 @@ pub struct JsonSchemaBasic {
     /// Type description
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub description: Option<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     #[reflect(ignore)]
-    pub items: Vec<Box<JsonSchemaBasic>>,
+    pub items: Option<Box<JsonSchemaBasic>>,
     // The value of this keyword MUST be a non-negative integer.
     // An array instance is valid against "minItems" if its size is greater than,
     // or equal to, the value of this keyword.
@@ -368,7 +368,7 @@ impl SchemaDefinitionsHelper for JsonSchemaBasic {
         for prefix_item in &self.prefix_items {
             types.extend(prefix_item.get_referenced_types());
         }
-        for item in &self.items {
+        if let Some(item) = &self.items {
             types.extend(item.get_referenced_types());
         }
         for (_, item) in &self.properties {
@@ -417,7 +417,7 @@ impl JsonSchemaBasic {
         for prefix_item in &mut self.prefix_items {
             prefix_item.change_referenced_types_location(location);
         }
-        for item in &mut self.items {
+        if let Some(item) = &mut self.items {
             item.change_referenced_types_location(location);
         }
         for (_, item) in &mut self.properties {
@@ -443,7 +443,7 @@ impl JsonSchemaBasic {
     ) {
         self.properties.clear();
         self.required.clear();
-        self.items.clear();
+        self.items = None;
         self.prefix_items.clear();
 
         // THIS is for cases like `struct Foo(i32);`.
@@ -477,9 +477,9 @@ impl JsonSchemaBasic {
         self.set_type(SchemaType::Array);
         if let Some(only_item) = only_item {
             self.prefix_items.clear();
-            self.items = vec![Box::new(only_item.clone())];
+            self.items = Some(Box::new(only_item.clone()));
         } else {
-            self.items.clear();
+            self.items = None;
             self.prefix_items = items.iter().map(|item| Box::new(item.clone())).collect();
         }
     }
@@ -527,9 +527,11 @@ impl JsonSchemaBasic {
             return Self::build(&optional_type);
         }
         let mut info = Self::from_type(t.ty(), description);
-        if let Some(array_el) = Self::try_get_array_info(t) {
+        if let Some(array_data) = Self::try_get_array_info(t) {
             info.set_type(SchemaType::Array);
-            info.items.push(Box::new(array_el));
+            info.min_items = array_data.min_items;
+            info.max_items = array_data.max_items;
+            info.items = Some(Box::new(array_data.items));
         }
         info
     }
@@ -570,14 +572,33 @@ impl JsonSchemaBasic {
         Some(*generic_info.ty())
     }
 
-    fn try_get_array_info(info: &TypeInfo) -> Option<Self> {
+    fn try_get_array_info(info: &TypeInfo) -> Option<ArrayInfo> {
         match info {
-            TypeInfo::List(info) => Some((info.item_info(), info.item_ty()).into()),
-            TypeInfo::Set(set_info) => Some(Self::from_type(&set_info.value_ty(), None)),
-            TypeInfo::Array(info) => Some((info.item_info(), info.item_ty()).into()),
+            TypeInfo::List(info) => Some(ArrayInfo {
+                min_items: None,
+                max_items: None,
+                items: (info.item_info(), info.item_ty()).into(),
+            }),
+            TypeInfo::Set(set_info) => Some(ArrayInfo {
+                min_items: None,
+                max_items: None,
+                items: Self::from_type(&set_info.value_ty(), None),
+            }),
+            TypeInfo::Array(info) => Some(ArrayInfo {
+                min_items: Some(info.capacity()),
+                max_items: Some(info.capacity()),
+                items: (info.item_info(), info.item_ty()).into(),
+            }),
             _ => None,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ArrayInfo {
+    pub min_items: Option<usize>,
+    pub max_items: Option<usize>,
+    pub items: JsonSchemaBasic,
 }
 
 impl From<&Type> for JsonSchemaBasic {
@@ -701,14 +722,13 @@ impl BasicTypeInfoBuilder for &TypeRegistry {
                     info.item_info(),
                     info.item_ty(),
                 ))]);
+                basic_info.min_items = Some(info.capacity());
                 basic_info.max_items = Some(info.capacity());
             }
             TypeInfo::Map(_map_info) => {}
             TypeInfo::Set(info) => {
                 basic_info.set_type(SchemaType::Array);
-                basic_info
-                    .items
-                    .push(Box::new(JsonSchemaBasic::build(&info.value_ty())));
+                basic_info.items = Some(Box::new(JsonSchemaBasic::build(&info.value_ty())));
             }
             TypeInfo::Enum(info) => {
                 // Since we want to use oneOf and some of the variants may not have same type.

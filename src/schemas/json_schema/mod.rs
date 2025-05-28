@@ -222,11 +222,6 @@ impl JsonSchemaBevyType {
 
 impl From<&JsonSchemaBasic> for JsonSchemaBevyType {
     fn from(value: &JsonSchemaBasic) -> Self {
-        let items: Option<Value> = if value.items.is_empty() {
-            None
-        } else {
-            Some(value.items.iter().map(|f| f.to_value()).collect())
-        };
         JsonSchemaBevyType {
             schema: value.schema.clone(),
             schema_type: value.r#type.clone(),
@@ -250,7 +245,7 @@ impl From<&JsonSchemaBasic> for JsonSchemaBevyType {
                 .flatten()
                 .collect(),
             prefix_items: value.prefix_items.iter().map(|f| f.to_value()).collect(),
-            items,
+            items: value.items.as_ref().map(|i| i.to_value()),
             min_items: value.min_items,
             max_items: value.max_items,
             description: value.description.clone(),
@@ -375,6 +370,40 @@ mod tests {
         );
         assert!(schema.properties.is_empty(), "Should not have any field");
         assert!(schema.one_of.len() == 3, "Should have 3 possible schemas");
+    }
+
+    #[test]
+    fn reflect_struct_with_array() {
+        #[derive(Reflect, Default, Deserialize, Serialize, Component)]
+        #[reflect(Default, Serialize, Component)]
+        pub struct ArrayComponent {
+            pub arry: [i32; 3],
+        }
+
+        test_against_json_schema::<ArrayComponent>(&[ArrayComponent { arry: [1, 2, 3] }], &[]);
+
+        let atr = AppTypeRegistry::default();
+        {
+            let mut register = atr.write();
+            register.register::<ArrayComponent>();
+        }
+        let type_registry = atr.read();
+        let Some(schema) = export_type_json_schema(
+            &type_registry,
+            TypeId::of::<ArrayComponent>(),
+            &DataTypes::default(),
+        ) else {
+            panic!("Failed to export type");
+        };
+        assert!(
+            schema.reflect_types.contains(&"Component".to_owned()),
+            "Should be a component"
+        );
+        assert!(
+            !schema.reflect_types.contains(&"Resource".to_owned()),
+            "Should not be a resource"
+        );
+        assert!(schema.properties.len() == 1, "Should have 1 field");
     }
 
     #[test]
