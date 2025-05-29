@@ -6,8 +6,8 @@ use crate::RemoteMethods;
 
 use super::json_schema::{
     json_schema::{
-        BasicTypeInfoBuilder, JsonSchemaBasic, SchemaDefinitionsHelper, TypeReferenceId,
-        TypeReferencePath,
+        BasicTypeInfoBuilder, JsonSchemaBasic, JsonSchemaProvider, ReferenceLocation,
+        SchemaDefinitionsHelper, TypeReferenceId, TypeReferencePath,
     },
     reflect_helper::ReflectDocReader,
 };
@@ -30,6 +30,15 @@ pub struct OpenRpcDocument {
     pub servers: Option<Vec<ServerObject>>,
     #[reflect(ignore)]
     pub components: HashMap<TypeReferenceId, Box<JsonSchemaBasic>>,
+}
+
+impl JsonSchemaProvider for OpenRpcDocument {
+    fn get_ref_path() -> Option<TypeReferencePath> {
+        Some(TypeReferencePath::new_ref(
+            ReferenceLocation::Url,
+            "https://raw.githubusercontent.com/open-rpc/meta-schema/master/schema.json",
+        ))
+    }
 }
 
 /// Contains metadata information about the `OpenRPC` document.
@@ -162,13 +171,15 @@ impl OpenRpcBuilder for &TypeRegistry {
                 if let Some(typed_info) = id.remote_type_info() {
                     if let Some(mut schema) = self
                         .get(typed_info.arg_type)
-                        .and_then(|r| Some(JsonSchemaBasic::build(r.type_info())))
+                        .and_then(|r| Some(self.build_json_schema_from_reg(r)))
                     {
                         if typed_info.arg_type != empty_type_id {
-                            schema.change_referenced_types_location(
-                                super::json_schema::json_schema::ReferenceLocation::Components,
-                            );
-                            referenced_types.extend(schema.get_referenced_types());
+                            if schema.ref_type.as_ref().is_some_and(|f| f.is_local()) {
+                                schema.change_referenced_types_location(
+                                    super::json_schema::json_schema::ReferenceLocation::Components,
+                                );
+                                referenced_types.extend(schema.get_referenced_types());
+                            }
                             method.params.push(schema);
                         }
                     };
@@ -182,7 +193,7 @@ impl OpenRpcBuilder for &TypeRegistry {
                     if typed_info.response_type != empty_type_id {
                         if let Some(mut schema) = self
                             .get(typed_info.response_type)
-                            .and_then(|r| Some(JsonSchemaBasic::build(r.type_info())))
+                            .and_then(|r| Some(self.build_json_schema_from_reg(r)))
                         {
                             schema.change_referenced_types_location(
                                 super::json_schema::json_schema::ReferenceLocation::Components,
@@ -205,5 +216,50 @@ impl OpenRpcBuilder for &TypeRegistry {
             components: Default::default(),
         };
         self.build_with_definitions(&document)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bevy_ecs::prelude::*;
+
+    use crate::{
+        builtin_methods::RpcDiscoverCommand,
+        cmd::remote_command_system,
+        schemas::{
+            json_schema::json_schema::ReflectJsonSchemaProvider,
+            open_rpc::{OpenRpcBuilder, OpenRpcDocument},
+        },
+    };
+
+    #[test]
+    pub fn test_open_rpc_document() {
+        let mut world = World::default();
+        world.init_resource::<AppTypeRegistry>();
+        let mut methods = crate::RemoteMethods::new();
+        {
+            let id = world.register_system(remote_command_system::<RpcDiscoverCommand>);
+            methods.add_method::<RpcDiscoverCommand>(id);
+
+            let register = world.get_resource_mut::<AppTypeRegistry>().unwrap();
+            let mut types = register.write();
+            types.register::<RpcDiscoverCommand>();
+            types.register::<OpenRpcDocument>();
+            types.register_type_data::<OpenRpcDocument, ReflectJsonSchemaProvider>();
+        }
+
+        let servers = None;
+
+        let type_registry = world.get_resource::<AppTypeRegistry>().unwrap().read();
+        let document = (&*type_registry).build_open_rpc_schema(&methods, servers);
+
+        eprintln!(
+            "SCHEMA: {}",
+            serde_json::to_string_pretty(&document).unwrap_or_default()
+        );
+
+        assert!(!document.methods.is_empty());
+        assert!(document.components.is_empty());
+        assert_eq!(document.openrpc, "1.3.2");
     }
 }

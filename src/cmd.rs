@@ -1,5 +1,3 @@
-use std::any::TypeId;
-
 use bevy_app::{App, PreStartup};
 use bevy_ecs::{
     system::{Command, Commands, In, ResMut},
@@ -8,7 +6,7 @@ use bevy_ecs::{
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
-use crate::{BrpError, BrpResult, CommandTypeInfo, RemoteMethodSystemId, RemoteMethods};
+use crate::{BrpError, BrpResult, RemoteMethods};
 
 pub struct RpcCommand {
     pub path: String,
@@ -116,18 +114,7 @@ pub fn add_remote_command<T: RemoteCommandSupport>(
     mut commands: Commands,
 ) {
     let system_id = commands.register_system(remote_command_system::<T>);
-
-    methods.insert(
-        T::RPC_PATH,
-        RemoteMethodSystemId::Instant(
-            system_id,
-            Some(CommandTypeInfo {
-                command_type: T::get_type_registration().type_id(),
-                arg_type: TypeId::of::<T::ParameterType>(),
-                response_type: TypeId::of::<T::ResponseType>(),
-            }),
-        ),
-    );
+    methods.add_method::<T>(system_id);
 }
 
 pub trait RemoteCommandAppExt {

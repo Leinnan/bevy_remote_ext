@@ -23,11 +23,11 @@ use serde::{Deserialize, Serialize, de::DeserializeSeed as _};
 use serde_json::{Map, Value};
 
 use crate::{
-    BrpError, BrpResult, DataTypes,
+    BrpError, BrpResult, SchemaTypesMetadata,
     cmd::RemoteCommandSupport,
     error_codes,
     schemas::{
-        json_schema::{JsonSchemaBevyType, json_schema::SchemaMarker},
+        json_schema::{JsonSchemaBevyType, TypeRegistrySchemaReader, json_schema::SchemaMarker},
         open_rpc::{OpenRpcBuilder, OpenRpcDocument},
     },
 };
@@ -1295,7 +1295,7 @@ pub fn export_registry_types(In(params): In<Option<Value>>, world: &World) -> Br
         None => Default::default(),
         Some(params) => parse(params)?,
     };
-    let data_types = world.resource::<DataTypes>();
+    let extra_info = world.resource::<SchemaTypesMetadata>();
 
     let types = world.resource::<AppTypeRegistry>();
     let types = types.read();
@@ -1330,11 +1330,7 @@ pub fn export_registry_types(In(params): In<Option<Value>>, world: &World) -> Br
             true
         })
         .flat_map(|e| {
-            let schema = crate::schemas::json_schema::export_type_json_schema(
-                &types,
-                e.type_id(),
-                data_types,
-            )?;
+            let schema = types.export_type_json_schema_for_id(extra_info, e.type_id())?;
 
             if !filter.type_limit.with.is_empty()
                 && !filter

@@ -4,9 +4,10 @@
 use bevy_derive::Deref;
 use bevy_platform::collections::{HashMap, HashSet};
 use bevy_reflect::{
-    NamedField, Reflect, Type, TypeInfo, TypeRegistration, TypeRegistry, UnnamedField, VariantInfo,
-    prelude::ReflectDefault, serde::ReflectSerializer,
+    FromType, NamedField, Reflect, Type, TypeInfo, TypeRegistration, TypeRegistry, UnnamedField,
+    VariantInfo, prelude::ReflectDefault, serde::ReflectSerializer,
 };
+use bevy_utils::default;
 use core::fmt;
 use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
@@ -18,9 +19,74 @@ use std::{
     fmt::{Display, Formatter},
 };
 
-use crate::ReflectSerializeAsArray;
-
 use super::reflect_helper::{MinMaxTypeReflectHelper, ReflectDocReader};
+
+/// Provides methods for customizing JSON Schema generation for a type
+pub trait JsonSchemaProvider {
+    /// Returns a custom reference path for this type in the JSON Schema
+    /// If None is returned, the default path will be used
+    fn get_ref_path() -> Option<TypeReferencePath> {
+        None
+    }
+
+    /// Returns a custom JSON Schema for this type
+    /// If None is returned, the schema will be generated automatically
+    fn get_custom_schema() -> Option<JsonSchemaBasic> {
+        None
+    }
+}
+
+/// Reflect-compatible wrapper for JsonSchemaProvider functionality
+#[derive(Clone)]
+pub struct ReflectJsonSchemaProvider {
+    /// Function that returns a custom reference path for a type
+    pub get_ref_path: fn() -> Option<TypeReferencePath>,
+
+    /// Function that returns a custom JSON Schema for a type
+    pub get_custom_schema: fn() -> Option<JsonSchemaBasic>,
+}
+
+impl<T: Reflect + JsonSchemaProvider> FromType<T> for ReflectJsonSchemaProvider {
+    fn from_type() -> Self {
+        Self {
+            get_ref_path: || T::get_ref_path(),
+            get_custom_schema: || T::get_custom_schema(),
+        }
+    }
+}
+
+impl FromType<glam::Vec3> for ReflectJsonSchemaProvider {
+    fn from_type() -> Self {
+        Self {
+            get_ref_path: || None,
+            get_custom_schema: || {
+                Some(JsonSchemaBasic {
+                    r#type: Some(SchemaType::Array),
+                    max_items: Some(3),
+                    min_items: Some(3),
+                    prefix_items: vec![
+                        Box::new(JsonSchemaBasic {
+                            r#type: Some(SchemaType::Number),
+                            description: Some("x".to_string()),
+                            ..Default::default()
+                        }),
+                        Box::new(JsonSchemaBasic {
+                            r#type: Some(SchemaType::Number),
+                            description: Some("y".to_string()),
+                            ..Default::default()
+                        }),
+                        Box::new(JsonSchemaBasic {
+                            r#type: Some(SchemaType::Number),
+                            description: Some("z".to_string()),
+                            ..Default::default()
+                        }),
+                    ],
+                    ..default()
+                })
+            },
+        }
+    }
+}
 
 /// Type of json schema
 /// More [here](https://json-schema.org/draft-07/draft-handrews-json-schema-01#rfc.section.4.2.1)
@@ -94,6 +160,8 @@ pub enum ReferenceLocation {
     Definitions,
     /// used by OpenRPC
     Components,
+    /// used by schemas
+    Url,
 }
 
 impl Display for ReferenceLocation {
@@ -101,6 +169,7 @@ impl Display for ReferenceLocation {
         match self {
             ReferenceLocation::Definitions => write!(f, "#/$defs/"),
             ReferenceLocation::Components => write!(f, "#/components/"),
+            ReferenceLocation::Url => write!(f, "https://"),
         }
     }
 }
@@ -112,6 +181,13 @@ pub struct TypeReferencePath {
     pub localization: ReferenceLocation,
     /// The id of the reference.
     pub id: TypeReferenceId,
+}
+
+impl TypeReferencePath {
+    pub fn is_local(&self) -> bool {
+        self.localization == ReferenceLocation::Definitions
+            || self.localization == ReferenceLocation::Components
+    }
 }
 
 #[derive(
@@ -173,6 +249,9 @@ impl TypeReferencePath {
     }
 
     pub fn change_localization(&mut self, new_localization: ReferenceLocation) {
+        if self.localization.eq(&ReferenceLocation::Url) {
+            return;
+        }
         self.localization = new_localization;
     }
 }
@@ -214,6 +293,11 @@ impl<'de> Visitor<'de> for TypeReferencePathVisitor {
         {
             Ok(TypeReferencePath::new_ref(
                 ReferenceLocation::Components,
+                component,
+            ))
+        } else if let Some(component) = value.strip_prefix(&ReferenceLocation::Url.to_string()) {
+            Ok(TypeReferencePath::new_ref(
+                ReferenceLocation::Url,
                 component,
             ))
         } else {
@@ -350,7 +434,7 @@ pub trait SchemaDefinitionsHelper {
         let definitions = self.get_definitions();
         referenced_types
             .iter()
-            .filter(|reference| !definitions.contains_key(&reference.id))
+            .filter(|reference| reference.is_local() && !definitions.contains_key(&reference.id))
             .cloned()
             .collect()
     }
@@ -655,7 +739,7 @@ pub trait BasicTypeInfoBuilder {
     fn build_json_schema_from_reg(&self, type_reg: &TypeRegistration) -> JsonSchemaBasic;
 }
 
-impl BasicTypeInfoBuilder for &TypeRegistry {
+impl BasicTypeInfoBuilder for TypeRegistry {
     fn build_json_schema_from_type_path(&self, type_path: &str) -> Option<JsonSchemaBasic> {
         let type_reg = self.get_with_type_path(type_path)?;
         Some(self.build_json_schema_from_reg(type_reg))
@@ -665,6 +749,18 @@ impl BasicTypeInfoBuilder for &TypeRegistry {
         Some(self.build_json_schema_from_reg(type_reg))
     }
     fn build_json_schema_from_reg(&self, type_reg: &TypeRegistration) -> JsonSchemaBasic {
+        if let Some(schema_provider) = type_reg.data::<ReflectJsonSchemaProvider>() {
+            if let Some(custom_schema) = (schema_provider.get_custom_schema)() {
+                return custom_schema;
+            }
+            if let Some(ref_path) = (schema_provider.get_ref_path)() {
+                return JsonSchemaBasic {
+                    ref_type: Some(ref_path),
+                    description: type_reg.type_info().to_description(),
+                    ..default()
+                };
+            }
+        }
         let mut basic_info = JsonSchemaBasic {
             schema: Some(SchemaMarker::default()),
             description: type_reg.type_info().to_description(),
@@ -683,23 +779,6 @@ impl BasicTypeInfoBuilder for &TypeRegistry {
                         basic_info.default_value = Some(value);
                     }
                 }
-            }
-        }
-        if type_reg.data::<ReflectSerializeAsArray>().is_some() {
-            if let Ok(struct_info) = type_reg.type_info().as_struct() {
-                let items: Vec<JsonSchemaBasic> = struct_info
-                    .iter()
-                    .map(|field| {
-                        let mut value = JsonSchemaBasic::build(field);
-                        value.description = Some(field.name().to_string());
-                        value
-                    })
-                    .collect();
-                let length = items.len();
-                basic_info.set_items_fields(items);
-                basic_info.min_items = length.into();
-                basic_info.max_items = length.into();
-                return basic_info;
             }
         }
 

@@ -1,9 +1,9 @@
 //! Module with JSON Schema type for Bevy Registry Types.
 //!  It tries to follow this standard: <https://json-schema.org/specification>
 
-use crate::DataTypes;
+use crate::SchemaTypesMetadata;
 use bevy_platform::collections::HashMap;
-use bevy_reflect::{Reflect, TypeInfo, TypeRegistry};
+use bevy_reflect::{GetTypeRegistration, Reflect, TypeInfo, TypeRegistry};
 use json_schema::{
     BasicTypeInfoBuilder, JsonSchemaBasic, SchemaMarker, SchemaNumber, SchemaType, TypeReferenceId,
 };
@@ -14,37 +14,62 @@ use std::any::TypeId;
 pub mod json_schema;
 pub mod reflect_helper;
 
-pub fn export_type_json_schema(
-    type_registry: &TypeRegistry,
-    type_id: TypeId,
-    data_types: &DataTypes,
-) -> Option<JsonSchemaBevyType> {
-    let base_type = type_registry.build_json_schema(type_id)?;
-
-    Some(JsonSchemaBevyType::build_from(
-        type_id,
-        &base_type,
-        type_registry,
-        data_types,
-    ))
+pub trait TypeRegistrySchemaReader: BasicTypeInfoBuilder {
+    /// Export type JSON Schema with definitions.
+    /// It can be useful for generating schemas for assets validation.
+    fn export_type_json_schema<T: GetTypeRegistration>(
+        &self,
+        extra_info: &SchemaTypesMetadata,
+    ) -> Option<JsonSchemaBevyType> {
+        self.export_type_json_schema_for_id(extra_info, T::get_type_registration().type_id())
+    }
+    /// Export type JSON Schema with definitions.
+    /// It can be useful for generating schemas for assets validation.
+    fn export_type_json_schema_for_id(
+        &self,
+        extra_info: &SchemaTypesMetadata,
+        type_id: TypeId,
+    ) -> Option<JsonSchemaBevyType>;
+    fn export_type_json_schema_basic<T: GetTypeRegistration>(
+        &self,
+        extra_info: &SchemaTypesMetadata,
+    ) -> Option<JsonSchemaBevyType> {
+        self.export_type_json_schema_basic_for_id(extra_info, T::get_type_registration().type_id())
+    }
+    fn export_type_json_schema_basic_for_id(
+        &self,
+        extra_info: &SchemaTypesMetadata,
+        type_id: TypeId,
+    ) -> Option<JsonSchemaBevyType>;
 }
+impl TypeRegistrySchemaReader for TypeRegistry {
+    fn export_type_json_schema_basic_for_id(
+        &self,
+        extra_info: &SchemaTypesMetadata,
+        type_id: TypeId,
+    ) -> Option<JsonSchemaBevyType> {
+        let base_type = self.build_json_schema(type_id)?;
 
-/// Export type JSON Schema with definitions.
-/// It can be useful for generating schemas for assets validation.
-pub fn export_type_json_schema_with_definitions(
-    type_registry: &TypeRegistry,
-    type_id: TypeId,
-    data_types: &DataTypes,
-) -> Option<JsonSchemaBevyType> {
-    let base_schema = type_registry.build_json_schema(type_id)?;
-    let base_schema = type_registry.build_with_definitions(&base_schema);
+        Some(JsonSchemaBevyType::build_from(
+            type_id, &base_type, self, extra_info,
+        ))
+    }
 
-    Some(JsonSchemaBevyType::build_from(
-        type_id,
-        &base_schema,
-        type_registry,
-        data_types,
-    ))
+    fn export_type_json_schema_for_id(
+        &self,
+        extra_info: &SchemaTypesMetadata,
+        type_id: TypeId,
+    ) -> Option<JsonSchemaBevyType> {
+        let base_schema = self.build_json_schema(type_id)?;
+        let base_schema = self.build_with_definitions(&base_schema);
+
+        Some(JsonSchemaBevyType::build_from(
+            type_id,
+            &base_schema,
+            self,
+            extra_info,
+        ))
+    }
 }
 
 /// JSON Schema type for Bevy Registry Types
@@ -169,7 +194,7 @@ impl JsonSchemaBevyType {
         type_id: TypeId,
         base_schema: &JsonSchemaBasic,
         type_registry: &TypeRegistry,
-        data_types: &DataTypes,
+        data_types: &SchemaTypesMetadata,
     ) -> Self {
         let type_reg = type_registry.get(type_id).expect("msg");
 
@@ -286,7 +311,6 @@ pub enum SchemaKind {
 
 #[cfg(test)]
 mod tests {
-    use std::any::TypeId;
     use std::fmt::Debug;
 
     use super::*;
@@ -313,7 +337,7 @@ mod tests {
         }
         let type_registry = atr.read();
         let Some(schema) =
-            export_type_json_schema(&type_registry, TypeId::of::<Foo>(), &DataTypes::default())
+            type_registry.export_type_json_schema::<Foo>(&SchemaTypesMetadata::default())
         else {
             panic!("Failed to export type");
         };
@@ -357,11 +381,9 @@ mod tests {
             register.register::<EnumComponent>();
         }
         let type_registry = atr.read();
-        let Some(schema) = export_type_json_schema(
-            &type_registry,
-            TypeId::of::<EnumComponent>(),
-            &DataTypes::default(),
-        ) else {
+        let Some(schema) =
+            type_registry.export_type_json_schema::<EnumComponent>(&SchemaTypesMetadata::default())
+        else {
             panic!("Failed to export type");
         };
         assert!(
@@ -414,11 +436,9 @@ mod tests {
             register.register::<ArrayComponent>();
         }
         let type_registry = atr.read();
-        let Some(schema) = export_type_json_schema(
-            &type_registry,
-            TypeId::of::<ArrayComponent>(),
-            &DataTypes::default(),
-        ) else {
+        let Some(schema) = type_registry
+            .export_type_json_schema::<ArrayComponent>(&SchemaTypesMetadata::default())
+        else {
             panic!("Failed to export type");
         };
         assert!(
@@ -462,11 +482,9 @@ mod tests {
             register.register::<EnumComponent>();
         }
         let type_registry = atr.read();
-        let Some(schema) = export_type_json_schema(
-            &type_registry,
-            TypeId::of::<EnumComponent>(),
-            &DataTypes::default(),
-        ) else {
+        let Some(schema) =
+            type_registry.export_type_json_schema::<EnumComponent>(&SchemaTypesMetadata::default())
+        else {
             panic!("Failed to export EnumComponent");
         };
         assert!(
@@ -502,11 +520,9 @@ mod tests {
             register.register::<TupleStructType>();
         }
         let type_registry = atr.read();
-        let Some(schema) = export_type_json_schema(
-            &type_registry,
-            TypeId::of::<TupleStructType>(),
-            &DataTypes::default(),
-        ) else {
+        let Some(schema) = type_registry
+            .export_type_json_schema::<TupleStructType>(&SchemaTypesMetadata::default())
+        else {
             panic!("Failed to export type");
         };
         assert!(
@@ -539,7 +555,7 @@ mod tests {
         }
         let type_registry = atr.read();
         let Some(schema) =
-            export_type_json_schema(&type_registry, TypeId::of::<Foo>(), &DataTypes::default())
+            type_registry.export_type_json_schema::<Foo>(&SchemaTypesMetadata::default())
         else {
             panic!("Failed to export type");
         };
@@ -655,7 +671,7 @@ mod tests {
         }
         let type_registry = atr.read();
         let Some(schema) =
-            export_type_json_schema(&type_registry, TypeId::of::<T>(), &DataTypes::default())
+            type_registry.export_type_json_schema::<T>(&SchemaTypesMetadata::default())
         else {
             panic!("Failed to export type");
         };

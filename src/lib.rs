@@ -386,7 +386,8 @@ use builtin_methods::{
     BevyGetCommand, BevyGetResourceCommand, BevyInsertCommand, BevyQueryCommand, BevySpawnCommand,
     RpcDiscoverCommand,
 };
-use cmd::RemoteCommandAppExt;
+use cmd::{RemoteCommandAppExt, RemoteCommandSupport};
+use schemas::{json_schema::json_schema::ReflectJsonSchemaProvider, open_rpc::OpenRpcDocument};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{any::TypeId, hash::Hash, sync::RwLock};
@@ -398,15 +399,6 @@ pub mod http;
 pub mod schemas;
 
 const CHANNEL_SIZE: usize = 16;
-
-#[derive(Clone)]
-pub struct ReflectSerializeAsArray;
-
-impl<T: Reflect + Serialize> bevy_reflect::FromType<T> for ReflectSerializeAsArray {
-    fn from_type() -> Self {
-        Self
-    }
-}
 
 /// Add this plugin to your [`App`] to allow remote connections to inspect and modify entities.
 ///
@@ -530,7 +522,7 @@ impl Default for RemotePlugin {
 
 impl Plugin for RemotePlugin {
     fn build(&self, app: &mut App) {
-        app.register_type_data::<glam::Vec3, ReflectSerializeAsArray>();
+        app.register_type_data::<glam::Vec3, ReflectJsonSchemaProvider>();
         let mut remote_methods = RemoteMethods::new();
 
         let plugin_methods = &mut *self.methods.write().unwrap();
@@ -549,6 +541,7 @@ impl Plugin for RemotePlugin {
             );
         }
         app.add_remote_method::<RpcDiscoverCommand>()
+            .register_type_data::<OpenRpcDocument, ReflectJsonSchemaProvider>()
             .add_remote_method::<BevyGetCommand>()
             .add_remote_method::<BevySpawnCommand>()
             .add_remote_method::<BevyGetResourceCommand>()
@@ -561,7 +554,7 @@ impl Plugin for RemotePlugin {
             .insert_after(Last, RemoteLast);
 
         app.insert_resource(remote_methods)
-            .init_resource::<DataTypes>()
+            .init_resource::<SchemaTypesMetadata>()
             .init_resource::<RemoteWatchingRequests>()
             .add_systems(PreStartup, setup_mailbox_channel)
             .configure_sets(
@@ -678,19 +671,37 @@ impl RemoteMethods {
         self.0.insert(method_name.into(), handler)
     }
 
+    pub fn add_method<T: RemoteCommandSupport>(&mut self, system_id: RemoteInstantMethodSystemId) {
+        self.insert(
+            T::RPC_PATH,
+            RemoteMethodSystemId::Instant(
+                system_id,
+                Some(CommandTypeInfo {
+                    command_type: T::get_type_registration().type_id(),
+                    arg_type: TypeId::of::<T::ParameterType>(),
+                    response_type: TypeId::of::<T::ResponseType>(),
+                }),
+            ),
+        );
+    }
+
     /// Get a [`Vec<String>`] with method names.
     pub fn methods(&self) -> Vec<String> {
         self.keys().cloned().collect()
     }
 }
 
-#[derive(Debug, Resource, Deref, Reflect)]
+#[derive(Debug, Resource, Reflect)]
 #[reflect(Resource)]
-pub struct DataTypes(HashMap<TypeId, String>);
+pub struct SchemaTypesMetadata {
+    pub data_types: HashMap<TypeId, String>,
+}
 
-impl Default for DataTypes {
+impl Default for SchemaTypesMetadata {
     fn default() -> Self {
-        let mut data_types = Self(HashMap::new());
+        let mut data_types = Self {
+            data_types: Default::default(),
+        };
         data_types.register_type::<ReflectComponent>("Component");
         data_types.register_type::<ReflectResource>("Resource");
         data_types.register_type::<ReflectDefault>("Default");
@@ -703,13 +714,13 @@ impl Default for DataTypes {
     }
 }
 
-impl DataTypes {
+impl SchemaTypesMetadata {
     pub fn register_type<T: TypeData>(&mut self, name: impl Into<String>) {
-        self.0.insert(TypeId::of::<T>(), name.into());
+        self.data_types.insert(TypeId::of::<T>(), name.into());
     }
 
     pub fn get_registered_reflect_types(&self, reg: &TypeRegistration) -> Vec<String> {
-        self.0
+        self.data_types
             .iter()
             .flat_map(|(id, name)| reg.data_by_id(*id).and(Some(name.clone())))
             .collect()
