@@ -233,12 +233,20 @@ impl<'de> Deserialize<'de> for TypeReferencePath {
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Reflect)]
 #[serde(untagged)]
 pub enum JsonSchemaVariant {
+    BoolValue(bool),
     Const {
         #[reflect(ignore)]
         #[serde(rename = "const")]
         value: Value,
     },
     Schema(#[reflect(ignore)] Box<JsonSchemaBasic>),
+}
+impl JsonSchemaVariant {
+    pub fn const_value(serializable: impl Serialize) -> Self {
+        Self::Const {
+            value: serde_json::to_value(serializable).unwrap_or_default(),
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Reflect)]
@@ -249,14 +257,6 @@ pub enum SchemaNumber {
     NegInt(i64),
     /// Always finite.
     Float(f64),
-}
-
-impl JsonSchemaVariant {
-    pub fn const_value(serializable: impl Serialize) -> Self {
-        Self::Const {
-            value: serde_json::to_value(serializable).unwrap_or_default(),
-        }
-    }
 }
 
 #[derive(Deserialize, Serialize, Debug, Reflect, PartialEq, Clone)]
@@ -330,7 +330,7 @@ pub struct JsonSchemaBasic {
     /// Validation with "additionalProperties" applies only to the child
     /// values of instance names that do not appear in the annotation results of either "properties" or "patternProperties".
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub additional_properties: Option<bool>,
+    pub additional_properties: Option<JsonSchemaVariant>,
     /// Enforces a single allowed value for the instance.
     #[serde(rename = "const", skip_serializing_if = "Option::is_none", default)]
     pub const_value: Option<JsonSchemaVariant>,
@@ -527,6 +527,14 @@ impl JsonSchemaBasic {
             return Self::build(&optional_type);
         }
         let mut info = Self::from_type(t.ty(), description);
+        if let Ok(map_info) = t.as_map() {
+            if map_info.key_ty().id().eq(&TypeId::of::<String>()) {
+                info.set_type(SchemaType::Object);
+                info.additional_properties = Some(JsonSchemaVariant::Schema(Box::new(
+                    JsonSchemaBasic::build((map_info.value_info(), map_info.value_ty())),
+                )));
+            }
+        }
         if let Some(array_data) = Self::try_get_array_info(t) {
             info.set_type(SchemaType::Array);
             info.min_items = array_data.min_items;
@@ -697,7 +705,7 @@ impl BasicTypeInfoBuilder for &TypeRegistry {
 
         match type_reg.type_info() {
             TypeInfo::Struct(struct_info) => {
-                basic_info.additional_properties = Some(false);
+                basic_info.additional_properties = Some(JsonSchemaVariant::BoolValue(false));
                 basic_info.set_properties(struct_info.iter());
             }
             TypeInfo::TupleStruct(info) => {
@@ -725,7 +733,14 @@ impl BasicTypeInfoBuilder for &TypeRegistry {
                 basic_info.min_items = Some(info.capacity());
                 basic_info.max_items = Some(info.capacity());
             }
-            TypeInfo::Map(_map_info) => {}
+            TypeInfo::Map(map_info) => {
+                if map_info.key_ty().id().eq(&TypeId::of::<String>()) {
+                    basic_info.set_type(SchemaType::Object);
+                    basic_info.additional_properties = Some(JsonSchemaVariant::Schema(Box::new(
+                        JsonSchemaBasic::build((map_info.value_info(), map_info.value_ty())),
+                    )));
+                }
+            }
             TypeInfo::Set(info) => {
                 basic_info.set_type(SchemaType::Array);
                 basic_info.items = Some(Box::new(JsonSchemaBasic::build(&info.value_ty())));

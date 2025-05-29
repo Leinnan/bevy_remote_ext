@@ -1,6 +1,6 @@
 # Bevy remote ext
 
-Custom version of bevy_remote package, with focus on better support of JSON Schema draft 7.
+Custom version of bevy_remote package, with focus on better support of JSON Schema draft 2020-12.
 
 End goal is making it better support the standard and being able to use schemas in various IDEs for content validation.
 

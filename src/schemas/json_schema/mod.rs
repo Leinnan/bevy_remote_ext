@@ -93,7 +93,8 @@ pub struct JsonSchemaBevyType {
     /// Validation with "additionalProperties" applies only to the child
     /// values of instance names that do not appear in the annotation results of either "properties" or "patternProperties".
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub additional_properties: Option<bool>,
+    #[reflect(ignore)]
+    pub additional_properties: Option<Value>,
     /// Validation succeeds if, for each name that appears in both the instance and as a name
     /// within this keyword's value, the child instance for that name successfully validates
     /// against the corresponding schema.
@@ -225,7 +226,10 @@ impl From<&JsonSchemaBasic> for JsonSchemaBevyType {
         JsonSchemaBevyType {
             schema: value.schema.clone(),
             schema_type: value.r#type.clone(),
-            additional_properties: value.additional_properties.clone(),
+            additional_properties: value
+                .additional_properties
+                .as_ref()
+                .map(|p| serde_json::to_value(p).unwrap_or_default()),
             properties: value
                 .properties
                 .iter()
@@ -370,6 +374,28 @@ mod tests {
         );
         assert!(schema.properties.is_empty(), "Should not have any field");
         assert!(schema.one_of.len() == 3, "Should have 3 possible schemas");
+    }
+
+    #[test]
+    fn reflect_struct_with_hashmap() {
+        #[derive(Reflect, Default, Deserialize, Serialize, Component)]
+        #[reflect(Default, Serialize, Component)]
+        pub struct HashComponent {
+            pub arry: HashMap<String, i32>,
+        }
+
+        test_against_json_schema::<HashComponent>(
+            &[HashComponent {
+                arry: [("SS".to_string(), 1), ("SS".to_string(), 2)].into(),
+            }],
+            &[
+                JsonSchemaTest::should_fail("{\"DDD\": \"2\"}"),
+                JsonSchemaTest::should_fail("{\"arry\": {\"DDD\": \"2\"}}"),
+                JsonSchemaTest::should_fail("{\"arry\": {\"DDD\": 2,\"DDDA\": \"2\"}}"),
+                JsonSchemaTest::should_pass("{\"arry\": {\"DDD\": 2}}"),
+                JsonSchemaTest::should_pass("{\"arry\": {\"DDD\": 2,\"DADD\": 5}}"),
+            ],
+        );
     }
 
     #[test]
