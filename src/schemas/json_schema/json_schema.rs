@@ -15,11 +15,11 @@ use serde::{
 };
 use serde_json::Value;
 use std::{
-    any::TypeId,
+    any::{Any, TypeId},
     fmt::{Display, Formatter},
 };
 
-use super::reflect_helper::{MinMaxTypeReflectHelper, ReflectDocReader};
+use super::reflect_helper::{ReflectDocReader, SchemaExtraInfo};
 
 /// Provides methods for customizing JSON Schema generation for a type
 pub trait JsonSchemaProvider {
@@ -606,11 +606,11 @@ impl JsonSchemaBasic {
         serde_json::to_value(self).unwrap_or_default()
     }
 
-    pub fn from_type_info(t: &TypeInfo, description: Option<String>) -> Self {
+    pub fn from_type_info(t: &TypeInfo, extra_info: SchemaExtraInfo) -> Self {
         if let Some(optional_type) = Self::get_type_from_optional(t) {
             return Self::build(&optional_type);
         }
-        let mut info = Self::from_type(t.ty(), description);
+        let mut info = Self::from_type(t.ty(), extra_info);
         if let Ok(map_info) = t.as_map() {
             if map_info.key_ty().id().eq(&TypeId::of::<String>()) {
                 info.set_type(SchemaType::Object);
@@ -628,22 +628,19 @@ impl JsonSchemaBasic {
         info
     }
 
-    pub fn from_type(t: &Type, description: Option<String>) -> Self {
+    pub fn from_type(t: &Type, extra_info: SchemaExtraInfo) -> Self {
         match SchemaType::try_get_primitive_type_from_type_id(t.id()) {
-            Some(basic_type) => {
-                let (minimum, maximum) = t.id().get_min_max_reflect();
-                Self {
-                    r#type: Some(basic_type),
-                    ref_type: None,
-                    minimum,
-                    maximum,
-                    description,
-                    ..Default::default()
-                }
-            }
+            Some(basic_type) => Self {
+                r#type: Some(basic_type),
+                ref_type: None,
+                minimum: extra_info.min_value,
+                maximum: extra_info.max_value,
+                description: extra_info.documentation,
+                ..Default::default()
+            },
             None => Self {
                 ref_type: Some(TypeReferencePath::definition(t)),
-                description,
+                description: extra_info.documentation,
                 ..Default::default()
             },
         }
@@ -674,7 +671,10 @@ impl JsonSchemaBasic {
             TypeInfo::Set(set_info) => Some(ArrayInfo {
                 min_items: None,
                 max_items: None,
-                items: Self::from_type(&set_info.value_ty(), None),
+                items: Self::from_type(
+                    &set_info.value_ty(),
+                    SchemaExtraInfo::docs_with_type(set_info, &set_info.value_ty().type_id()),
+                ),
             }),
             TypeInfo::Array(info) => Some(ArrayInfo {
                 min_items: Some(info.capacity()),
@@ -695,20 +695,20 @@ pub struct ArrayInfo {
 
 impl From<&Type> for JsonSchemaBasic {
     fn from(value: &Type) -> Self {
-        Self::from_type(value, None)
+        Self::from_type(value, SchemaExtraInfo::default())
     }
 }
 
 impl From<&TypeInfo> for JsonSchemaBasic {
     fn from(value: &TypeInfo) -> Self {
-        JsonSchemaBasic::from_type_info(value, value.to_description())
+        JsonSchemaBasic::from_type_info(value, value.into())
     }
 }
 
 impl From<&NamedField> for JsonSchemaBasic {
     fn from(value: &NamedField) -> Self {
         match value.type_info() {
-            Some(info) => JsonSchemaBasic::from_type_info(info, value.to_description()),
+            Some(info) => JsonSchemaBasic::from_type_info(info, value.into()),
             None => value.ty().into(),
         }
     }
@@ -717,7 +717,7 @@ impl From<&NamedField> for JsonSchemaBasic {
 impl From<&UnnamedField> for JsonSchemaBasic {
     fn from(value: &UnnamedField) -> Self {
         match value.type_info() {
-            Some(info) => JsonSchemaBasic::from_type_info(info, value.to_description()),
+            Some(info) => JsonSchemaBasic::from_type_info(info, value.into()),
             None => value.ty().into(),
         }
     }
@@ -726,7 +726,7 @@ impl From<&UnnamedField> for JsonSchemaBasic {
 impl From<(Option<&TypeInfo>, Type)> for JsonSchemaBasic {
     fn from((info, ty): (Option<&TypeInfo>, Type)) -> Self {
         match info {
-            Some(info) => JsonSchemaBasic::from_type_info(info, info.to_description()),
+            Some(info) => JsonSchemaBasic::from_type_info(info, info.into()),
             None => JsonSchemaBasic::build(&ty),
         }
     }
@@ -860,8 +860,7 @@ impl BasicTypeInfoBuilder for TypeRegistry {
                     .collect();
             }
             TypeInfo::Opaque(info) => {
-                basic_info =
-                    JsonSchemaBasic::from_type(info.ty(), type_reg.type_info().to_description());
+                basic_info = JsonSchemaBasic::from_type(info.ty(), type_reg.type_info().into());
                 basic_info.schema = Some(SchemaMarker::default());
             }
         }

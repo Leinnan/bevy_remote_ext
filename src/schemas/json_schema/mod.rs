@@ -2,8 +2,9 @@
 //!  It tries to follow this standard: <https://json-schema.org/specification>
 
 use crate::SchemaTypesMetadata;
+use bevy_derive::{Deref, DerefMut};
 use bevy_platform::collections::HashMap;
-use bevy_reflect::{GetTypeRegistration, Reflect, TypeInfo, TypeRegistry};
+use bevy_reflect::{GetTypeRegistration, Reflect, TypeData, TypeInfo, TypeRegistry};
 use json_schema::{
     BasicTypeInfoBuilder, JsonSchemaBasic, SchemaMarker, SchemaNumber, SchemaType, TypeReferenceId,
 };
@@ -72,6 +73,15 @@ impl TypeRegistrySchemaReader for TypeRegistry {
     }
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default, Reflect, Deref, DerefMut)]
+pub struct ReflectTypes(Vec<String>);
+
+impl ReflectTypes {
+    pub fn has_data_type<T: TypeData>(&self) -> bool {
+        self.0.contains(&core::any::type_name::<T>().to_string())
+    }
+}
+
 /// JSON Schema type for Bevy Registry Types
 /// It tries to follow this standard: <https://json-schema.org/specification>
 ///
@@ -94,7 +104,7 @@ pub struct JsonSchemaBevyType {
     pub crate_name: Option<String>,
     /// Bevy specific field, names of the types that type reflects.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
-    pub reflect_types: Vec<String>,
+    pub reflect_types: ReflectTypes,
     /// Bevy specific field, [`TypeInfo`] type mapping.
     pub kind: SchemaKind,
     /// Bevy specific field, provided when [`SchemaKind`] `kind` field is equal to [`SchemaKind::Map`].
@@ -204,7 +214,7 @@ impl JsonSchemaBevyType {
         let short_path = binding.short_path();
         let type_path = binding.path();
         let mut typed_schema = JsonSchemaBevyType {
-            reflect_types: data_types.get_registered_reflect_types(type_reg),
+            reflect_types: ReflectTypes(data_types.get_registered_reflect_types(type_reg)),
             short_path: short_path.to_owned(),
             type_path: type_path.to_owned(),
             crate_name: binding.crate_name().map(str::to_owned),
@@ -343,11 +353,11 @@ mod tests {
         };
 
         assert!(
-            !schema.reflect_types.contains(&"Component".to_owned()),
+            !schema.reflect_types.has_data_type::<ReflectComponent>(),
             "Should not be a component"
         );
         assert!(
-            schema.reflect_types.contains(&"Resource".to_owned()),
+            schema.reflect_types.has_data_type::<ReflectResource>(),
             "Should be a resource"
         );
         let _ = schema.properties.get("a").expect("Missing `a` field");
@@ -387,11 +397,11 @@ mod tests {
             panic!("Failed to export type");
         };
         assert!(
-            schema.reflect_types.contains(&"Component".to_owned()),
+            schema.reflect_types.has_data_type::<ReflectComponent>(),
             "Should be a component"
         );
         assert!(
-            !schema.reflect_types.contains(&"Resource".to_owned()),
+            !schema.reflect_types.has_data_type::<ReflectResource>(),
             "Should not be a resource"
         );
         assert!(schema.properties.is_empty(), "Should not have any field");
@@ -442,14 +452,45 @@ mod tests {
             panic!("Failed to export type");
         };
         assert!(
-            schema.reflect_types.contains(&"Component".to_owned()),
+            schema.reflect_types.has_data_type::<ReflectComponent>(),
             "Should be a component"
         );
         assert!(
-            !schema.reflect_types.contains(&"Resource".to_owned()),
+            !schema.reflect_types.has_data_type::<ReflectResource>(),
             "Should not be a resource"
         );
         assert!(schema.properties.len() == 1, "Should have 1 field");
+    }
+
+    #[test]
+    fn reflect_export_struct_with_ranges() {
+        #[derive(Reflect, Default, Deserialize, Serialize)]
+        #[reflect(Default, Serialize)]
+        pub struct StructTest {
+            value_one: i32,
+            value_two: i32,
+            #[reflect(@0..=12_i32)]
+            no_value: i32,
+        }
+
+        test_against_json_schema::<StructTest>(
+            &[StructTest {
+                value_one: 1,
+                value_two: 2,
+                no_value: 3,
+            }],
+            &[
+                JsonSchemaTest::should_pass(
+                    "{\"value_one\": 1, \"value_two\": 2, \"no_value\": 3}",
+                ),
+                JsonSchemaTest::should_fail(
+                    "{\"value_one\": 1, \"value_two\": 2, \"no_value\": 13}",
+                ),
+                JsonSchemaTest::should_fail(
+                    "{\"value_one\": 1, \"value_two\": 2, \"no_value\": -1}",
+                ),
+            ],
+        );
     }
 
     #[test]
@@ -488,11 +529,11 @@ mod tests {
             panic!("Failed to export EnumComponent");
         };
         assert!(
-            !schema.reflect_types.contains(&"Component".to_owned()),
+            !schema.reflect_types.has_data_type::<ReflectComponent>(),
             "Should not be a component"
         );
         assert!(
-            !schema.reflect_types.contains(&"Resource".to_owned()),
+            !schema.reflect_types.has_data_type::<ReflectResource>(),
             "Should not be a resource"
         );
         assert!(schema.properties.is_empty(), "Should not have any field");
@@ -526,11 +567,11 @@ mod tests {
             panic!("Failed to export type");
         };
         assert!(
-            schema.reflect_types.contains(&"Component".to_owned()),
+            schema.reflect_types.has_data_type::<ReflectComponent>(),
             "Should be a component"
         );
         assert!(
-            !schema.reflect_types.contains(&"Resource".to_owned()),
+            !schema.reflect_types.has_data_type::<ReflectResource>(),
             "Should not be a resource"
         );
         assert!(schema.properties.is_empty(), "Should not have any field");
@@ -570,8 +611,8 @@ mod tests {
           "crateName": "bevy_remote",
           "default": {"a": 0},
           "reflectTypes": [
-            "Default",
-            "Resource",
+            "bevy_reflect::std_traits::ReflectDefault",
+            "bevy_ecs::reflect::resource::ReflectResource",
           ],
           "kind": "Struct",
           "type": "object",

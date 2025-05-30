@@ -702,21 +702,22 @@ impl Default for SchemaTypesMetadata {
         let mut data_types = Self {
             data_types: Default::default(),
         };
-        data_types.register_type::<ReflectComponent>("Component");
-        data_types.register_type::<ReflectResource>("Resource");
-        data_types.register_type::<ReflectDefault>("Default");
-        data_types.register_type::<ReflectSerialize>("Serialize");
-        data_types.register_type::<ReflectDefault>("Default");
-        data_types.register_type::<ReflectAsset>("Asset");
-        data_types.register_type::<ReflectHandle>("AssetHandle");
-        data_types.register_type::<ReflectDeserialize>("Deserialize");
+        data_types.register_type::<ReflectComponent>();
+        data_types.register_type::<ReflectResource>();
+        data_types.register_type::<ReflectDefault>();
+        data_types.register_type::<ReflectSerialize>();
+        data_types.register_type::<ReflectDefault>();
+        data_types.register_type::<ReflectAsset>();
+        data_types.register_type::<ReflectHandle>();
+        data_types.register_type::<ReflectDeserialize>();
         data_types
     }
 }
 
 impl SchemaTypesMetadata {
-    pub fn register_type<T: TypeData>(&mut self, name: impl Into<String>) {
-        self.data_types.insert(TypeId::of::<T>(), name.into());
+    pub fn register_type<T: TypeData>(&mut self) {
+        self.data_types
+            .insert(TypeId::of::<T>(), core::any::type_name::<T>().to_string());
     }
 
     pub fn get_registered_reflect_types(&self, reg: &TypeRegistration) -> Vec<String> {
