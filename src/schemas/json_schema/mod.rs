@@ -413,7 +413,7 @@ mod tests {
         #[derive(Reflect, Default, Deserialize, Serialize, Component)]
         #[reflect(Default, Serialize, Component)]
         pub struct HashComponent {
-            pub arry: HashMap<String, i32>,
+            pub arry: HashMap<String, usize>,
         }
 
         test_against_json_schema::<HashComponent>(
@@ -426,6 +426,7 @@ mod tests {
                 JsonSchemaTest::should_fail("{\"arry\": {\"DDD\": 2,\"DDDA\": \"2\"}}"),
                 JsonSchemaTest::should_pass("{\"arry\": {\"DDD\": 2}}"),
                 JsonSchemaTest::should_pass("{\"arry\": {\"DDD\": 2,\"DADD\": 5}}"),
+                JsonSchemaTest::should_fail("{\"arry\": {\"DDD\": 2,\"DADD\": -5}}"),
             ],
         );
     }

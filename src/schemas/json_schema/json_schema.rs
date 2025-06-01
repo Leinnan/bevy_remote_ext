@@ -614,9 +614,13 @@ impl JsonSchemaBasic {
         if let Ok(map_info) = t.as_map() {
             if map_info.key_ty().id().eq(&TypeId::of::<String>()) {
                 info.set_type(SchemaType::Object);
-                info.additional_properties = Some(JsonSchemaVariant::Schema(Box::new(
-                    JsonSchemaBasic::build((map_info.value_info(), map_info.value_ty())),
-                )));
+                let schema = match map_info.value_info() {
+                    Some(val_type_info) => {
+                        JsonSchemaBasic::from_type_info(val_type_info, val_type_info.into())
+                    }
+                    None => JsonSchemaBasic::from_type(map_info.ty(), map_info.ty().id().into()),
+                };
+                info.additional_properties = Some(JsonSchemaVariant::Schema(Box::new(schema)));
             }
         }
         if let Some(array_data) = Self::try_get_array_info(t) {
@@ -815,9 +819,16 @@ impl BasicTypeInfoBuilder for TypeRegistry {
             TypeInfo::Map(map_info) => {
                 if map_info.key_ty().id().eq(&TypeId::of::<String>()) {
                     basic_info.set_type(SchemaType::Object);
-                    basic_info.additional_properties = Some(JsonSchemaVariant::Schema(Box::new(
-                        JsonSchemaBasic::build((map_info.value_info(), map_info.value_ty())),
-                    )));
+                    let schema = match map_info.value_info() {
+                        Some(val_type_info) => {
+                            JsonSchemaBasic::from_type_info(val_type_info, val_type_info.into())
+                        }
+                        None => {
+                            JsonSchemaBasic::from_type(map_info.ty(), map_info.ty().id().into())
+                        }
+                    };
+                    basic_info.additional_properties =
+                        Some(JsonSchemaVariant::Schema(Box::new(schema)));
                 }
             }
             TypeInfo::Set(info) => {

@@ -122,12 +122,12 @@ impl From<&NamedField> for SchemaExtraInfo {
 }
 
 impl From<&TypeInfo> for SchemaExtraInfo {
-    fn from(field: &TypeInfo) -> Self {
+    fn from(type_info: &TypeInfo) -> Self {
         let mut info = SchemaExtraInfo::default();
-        info.documentation = field.to_description();
-        // let (min, max) = field.get_min_max_reflect();
-        // info.min_value = min;
-        // info.max_value = max;
+        info.documentation = type_info.to_description();
+        let (min, max) = type_info.type_id().get_min_max_reflect();
+        info.min_value = min;
+        info.max_value = max;
         info
     }
 }
