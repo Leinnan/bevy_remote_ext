@@ -6,13 +6,13 @@ use crate::RemoteMethods;
 
 use super::json_schema::{
     json_schema::{
-        BasicTypeInfoBuilder, JsonSchemaBasic, JsonSchemaProvider, ReferenceLocation,
+        BasicTypeInfoBuilder, JsonSchemaBasic, ReferenceLocation, ReflectJsonSchema,
         SchemaDefinitionsHelper, TypeReferenceId, TypeReferencePath,
     },
     reflect_helper::ReflectDocReader,
 };
 use bevy_platform::collections::HashMap;
-use bevy_reflect::{Reflect, TypeRegistry};
+use bevy_reflect::{FromType, Reflect, TypeRegistry};
 use bevy_utils::default;
 use serde::{Deserialize, Serialize};
 
@@ -32,12 +32,20 @@ pub struct OpenRpcDocument {
     pub components: HashMap<TypeReferenceId, Box<JsonSchemaBasic>>,
 }
 
-impl JsonSchemaProvider for OpenRpcDocument {
-    fn get_ref_path() -> Option<TypeReferencePath> {
-        Some(TypeReferencePath::new_ref(
-            ReferenceLocation::Url,
-            "https://raw.githubusercontent.com/open-rpc/meta-schema/master/schema.json",
-        ))
+impl FromType<OpenRpcDocument> for ReflectJsonSchema {
+    fn from_type() -> Self {
+        JsonSchemaBasic {
+            ref_type: Some(TypeReferencePath::new_ref(
+                ReferenceLocation::Url,
+                "https://raw.githubusercontent.com/open-rpc/meta-schema/master/schema.json",
+            )),
+            description: Some(
+                "Represents an `OpenRPC` document as defined by the `OpenRPC` specification."
+                    .to_string(),
+            ),
+            ..default()
+        }
+        .into()
     }
 }
 
@@ -227,7 +235,7 @@ mod tests {
         builtin_methods::RpcDiscoverCommand,
         cmd::remote_command_system,
         schemas::{
-            json_schema::json_schema::ReflectJsonSchemaProvider,
+            json_schema::json_schema::ReflectJsonSchema,
             open_rpc::{OpenRpcBuilder, OpenRpcDocument},
         },
     };
@@ -245,7 +253,7 @@ mod tests {
             let mut types = register.write();
             types.register::<RpcDiscoverCommand>();
             types.register::<OpenRpcDocument>();
-            types.register_type_data::<OpenRpcDocument, ReflectJsonSchemaProvider>();
+            types.register_type_data::<OpenRpcDocument, ReflectJsonSchema>();
         }
 
         let servers = None;

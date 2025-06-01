@@ -387,7 +387,7 @@ use builtin_methods::{
     RpcDiscoverCommand,
 };
 use cmd::{RemoteCommandAppExt, RemoteCommandSupport};
-use schemas::{json_schema::json_schema::ReflectJsonSchemaProvider, open_rpc::OpenRpcDocument};
+use schemas::{json_schema::json_schema::ReflectJsonSchema, open_rpc::OpenRpcDocument};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{any::TypeId, hash::Hash, sync::RwLock};
@@ -522,7 +522,7 @@ impl Default for RemotePlugin {
 
 impl Plugin for RemotePlugin {
     fn build(&self, app: &mut App) {
-        app.register_type_data::<glam::Vec3, ReflectJsonSchemaProvider>();
+        app.register_type_data::<glam::Vec3, ReflectJsonSchema>();
         let mut remote_methods = RemoteMethods::new();
 
         let plugin_methods = &mut *self.methods.write().unwrap();
@@ -541,7 +541,7 @@ impl Plugin for RemotePlugin {
             );
         }
         app.add_remote_method::<RpcDiscoverCommand>()
-            .register_type_data::<OpenRpcDocument, ReflectJsonSchemaProvider>()
+            .register_type_data::<OpenRpcDocument, ReflectJsonSchema>()
             .add_remote_method::<BevyGetCommand>()
             .add_remote_method::<BevySpawnCommand>()
             .add_remote_method::<BevyGetResourceCommand>()

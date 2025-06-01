@@ -21,70 +21,55 @@ use std::{
 
 use super::reflect_helper::{ReflectDocReader, SchemaExtraInfo};
 
-/// Provides methods for customizing JSON Schema generation for a type
-pub trait JsonSchemaProvider {
-    /// Returns a custom reference path for this type in the JSON Schema
-    /// If None is returned, the default path will be used
-    fn get_ref_path() -> Option<TypeReferencePath> {
-        None
-    }
-
-    /// Returns a custom JSON Schema for this type
-    /// If None is returned, the schema will be generated automatically
-    fn get_custom_schema() -> Option<JsonSchemaBasic> {
-        None
-    }
-}
-
-/// Reflect-compatible wrapper for JsonSchemaProvider functionality
+/// Reflect-compatible custom JSON Schema for this type
 #[derive(Clone)]
-pub struct ReflectJsonSchemaProvider {
-    /// Function that returns a custom reference path for a type
-    pub get_ref_path: fn() -> Option<TypeReferencePath>,
-
-    /// Function that returns a custom JSON Schema for a type
-    pub get_custom_schema: fn() -> Option<JsonSchemaBasic>,
+pub struct ReflectJsonSchema {
+    /// Custom JSON Schema for this type
+    pub custom_schema: JsonSchemaBasic,
 }
 
-impl<T: Reflect + JsonSchemaProvider> FromType<T> for ReflectJsonSchemaProvider {
-    fn from_type() -> Self {
+impl From<&JsonSchemaBasic> for ReflectJsonSchema {
+    fn from(schema: &JsonSchemaBasic) -> Self {
         Self {
-            get_ref_path: || T::get_ref_path(),
-            get_custom_schema: || T::get_custom_schema(),
+            custom_schema: schema.clone(),
         }
     }
 }
 
-impl FromType<glam::Vec3> for ReflectJsonSchemaProvider {
-    fn from_type() -> Self {
+impl From<JsonSchemaBasic> for ReflectJsonSchema {
+    fn from(schema: JsonSchemaBasic) -> Self {
         Self {
-            get_ref_path: || None,
-            get_custom_schema: || {
-                Some(JsonSchemaBasic {
-                    r#type: Some(SchemaType::Array),
-                    max_items: Some(3),
-                    min_items: Some(3),
-                    prefix_items: vec![
-                        Box::new(JsonSchemaBasic {
-                            r#type: Some(SchemaType::Number),
-                            description: Some("x".to_string()),
-                            ..Default::default()
-                        }),
-                        Box::new(JsonSchemaBasic {
-                            r#type: Some(SchemaType::Number),
-                            description: Some("y".to_string()),
-                            ..Default::default()
-                        }),
-                        Box::new(JsonSchemaBasic {
-                            r#type: Some(SchemaType::Number),
-                            description: Some("z".to_string()),
-                            ..Default::default()
-                        }),
-                    ],
-                    ..default()
-                })
-            },
+            custom_schema: schema,
         }
+    }
+}
+
+impl FromType<glam::Vec3> for ReflectJsonSchema {
+    fn from_type() -> Self {
+        JsonSchemaBasic {
+            r#type: Some(SchemaType::Array),
+            max_items: Some(3),
+            min_items: Some(3),
+            prefix_items: vec![
+                Box::new(JsonSchemaBasic {
+                    r#type: Some(SchemaType::Number),
+                    description: Some("x".to_string()),
+                    ..Default::default()
+                }),
+                Box::new(JsonSchemaBasic {
+                    r#type: Some(SchemaType::Number),
+                    description: Some("y".to_string()),
+                    ..Default::default()
+                }),
+                Box::new(JsonSchemaBasic {
+                    r#type: Some(SchemaType::Number),
+                    description: Some("z".to_string()),
+                    ..Default::default()
+                }),
+            ],
+            ..default()
+        }
+        .into()
     }
 }
 
@@ -753,17 +738,8 @@ impl BasicTypeInfoBuilder for TypeRegistry {
         Some(self.build_json_schema_from_reg(type_reg))
     }
     fn build_json_schema_from_reg(&self, type_reg: &TypeRegistration) -> JsonSchemaBasic {
-        if let Some(schema_provider) = type_reg.data::<ReflectJsonSchemaProvider>() {
-            if let Some(custom_schema) = (schema_provider.get_custom_schema)() {
-                return custom_schema;
-            }
-            if let Some(ref_path) = (schema_provider.get_ref_path)() {
-                return JsonSchemaBasic {
-                    ref_type: Some(ref_path),
-                    description: type_reg.type_info().to_description(),
-                    ..default()
-                };
-            }
+        if let Some(schema_provider) = type_reg.data::<ReflectJsonSchema>() {
+            return schema_provider.custom_schema.clone();
         }
         let mut basic_info = JsonSchemaBasic {
             schema: Some(SchemaMarker::default()),

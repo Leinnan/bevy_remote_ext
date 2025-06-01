@@ -1,6 +1,6 @@
 [package]
 name = "bevy_remote"
-version = "0.16.0"
+version = "0.16.1"
 edition = "2024"
 description = "The Bevy Remote Protocol"
 homepage = "https://bevyengine.org"
@@ -16,18 +16,18 @@ glam = ["dep:glam", "bevy_reflect/glam"]
 
 [dependencies]
 # bevy
-bevy_app = { version = "0.16.0" }
-bevy_log = "0.16.0"
-bevy_derive = { version = "0.16.0" }
-bevy_ecs = { version = "0.16.0", features = ["serialize"] }
-bevy_reflect = { version = "0.16.0" }
-bevy_tasks = { version = "0.16.0" }
-bevy_utils = { version = "0.16.0" }
-bevy_platform = { version = "0.16.0", default-features = false, features = [
+bevy_app = { version = "0.16.1" }
+bevy_log = "0.16.1"
+bevy_derive = { version = "0.16.1" }
+bevy_ecs = { version = "0.16.1", features = ["serialize"] }
+bevy_reflect = { version = "0.16.1" }
+bevy_tasks = { version = "0.16.1" }
+bevy_utils = { version = "0.16.1" }
+bevy_platform = { version = "0.16.1", default-features = false, features = [
     "std",
     "serialize",
 ] }
-bevy_asset = { version = "0.16.0" }
+bevy_asset = { version = "0.16.1" }
 glam = { version = "0.29.3", default-features = false, features = [
     "serde",
 ], optional = true }
@@ -35,7 +35,7 @@ glam = { version = "0.29.3", default-features = false, features = [
 anyhow = "1"
 hyper = { version = "1", features = ["server", "http1"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1" }
+serde_json = { version = "1.0.140" }
 http-body-util = "0.1"
 async-channel = "2"
 
