@@ -85,50 +85,51 @@ pub struct SchemaExtraInfo {
 
 impl SchemaExtraInfo {
     pub fn just_docs<T: ReflectDocReader>(ty: &T) -> Self {
-        let mut info = SchemaExtraInfo::default();
-        info.documentation = ty.to_description();
-        info
+        SchemaExtraInfo{
+            documentation: ty.to_description(),
+            ..Default::default()
+        }
     }
-    pub fn docs_with_type<T: ReflectDocReader>(ty: &T, type_id: &TypeId) -> Self {
-        let mut info = SchemaExtraInfo::default();
-        info.documentation = ty.to_description();
-        let (min, max) = type_id.get_min_max_reflect();
-        info.min_value = min;
-        info.max_value = max;
-        info
+    pub fn docs_with_type<T: ReflectDocReader>(ty: &T, type_id: &TypeId) -> Self {        
+        let (min_value, max_value) = type_id.get_min_max_reflect();
+        SchemaExtraInfo{
+            documentation: ty.to_description(),
+            min_value,
+            max_value
+        }
     }
 }
 
 impl From<&UnnamedField> for SchemaExtraInfo {
     fn from(field: &UnnamedField) -> Self {
-        let mut info = SchemaExtraInfo::default();
-        info.documentation = field.to_description();
-        let (min, max) = field.get_min_max_reflect();
-        info.min_value = min;
-        info.max_value = max;
-        info
+        let (min_value, max_value) = field.type_id().get_min_max_reflect();
+        SchemaExtraInfo{
+            documentation: field.to_description(),
+            min_value,
+            max_value
+        }
     }
 }
 
 impl From<&NamedField> for SchemaExtraInfo {
     fn from(field: &NamedField) -> Self {
-        let mut info = SchemaExtraInfo::default();
-        info.documentation = field.to_description();
-        let (min, max) = field.get_min_max_reflect();
-        info.min_value = min;
-        info.max_value = max;
-        info
+        let (min_value, max_value) = field.type_id().get_min_max_reflect();
+        SchemaExtraInfo{
+            documentation: field.to_description(),
+            min_value,
+            max_value
+        }
     }
 }
 
 impl From<&TypeInfo> for SchemaExtraInfo {
     fn from(type_info: &TypeInfo) -> Self {
-        let mut info = SchemaExtraInfo::default();
-        info.documentation = type_info.to_description();
-        let (min, max) = type_info.type_id().get_min_max_reflect();
-        info.min_value = min;
-        info.max_value = max;
-        info
+        let (min_value, max_value) = type_info.type_id().get_min_max_reflect();
+        SchemaExtraInfo{
+            documentation: type_info.to_description(),
+            min_value,
+            max_value
+        }
     }
 }
 
@@ -181,8 +182,8 @@ pub trait MinMaxTypeReflectHelper {
             max = Some(SchemaNumber::PosInt(*data.end() as u64));
         }
         if let Some(data) = self.get_data::<u64>() {
-            min = Some(SchemaNumber::PosInt(*data.start() as u64));
-            max = Some(SchemaNumber::PosInt(*data.end() as u64));
+            min = Some(SchemaNumber::PosInt(*data.start()));
+            max = Some(SchemaNumber::PosInt(*data.end()));
         }
 
         if let Some(data) = self.get_data::<i8>() {
@@ -198,8 +199,8 @@ pub trait MinMaxTypeReflectHelper {
             max = Some(SchemaNumber::NegInt((*data.end()).into()));
         }
         if let Some(data) = self.get_data::<i64>() {
-            min = Some(SchemaNumber::NegInt((*data.start()).into()));
-            max = Some(SchemaNumber::NegInt((*data.end()).into()));
+            min = Some(SchemaNumber::NegInt(*data.start()));
+            max = Some(SchemaNumber::NegInt(*data.end()));
         }
         (min, max)
     }

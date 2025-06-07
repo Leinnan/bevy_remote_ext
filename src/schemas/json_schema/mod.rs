@@ -1,7 +1,6 @@
 //! Module with JSON Schema type for Bevy Registry Types.
 //!  It tries to follow this standard: <https://json-schema.org/specification>
 
-use crate::SchemaTypesMetadata;
 use bevy_derive::{Deref, DerefMut};
 use bevy_platform::collections::HashMap;
 use bevy_reflect::{GetTypeRegistration, Reflect, TypeData, TypeInfo, TypeRegistry};
@@ -12,8 +11,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::any::TypeId;
 
+use crate::schemas::SchemaTypesMetadata;
+
 pub mod json_schema;
 pub mod reflect_helper;
+
 
 pub trait TypeRegistrySchemaReader: BasicTypeInfoBuilder {
     /// Export type JSON Schema with definitions.
@@ -280,8 +282,7 @@ impl From<&JsonSchemaBasic> for JsonSchemaBevyType {
             one_of: value
                 .one_of
                 .iter()
-                .map(|s| serde_json::to_value(s))
-                .flatten()
+                .flat_map(serde_json::to_value)
                 .collect(),
             prefix_items: value.prefix_items.iter().map(|f| f.to_value()).collect(),
             items: value.items.as_ref().map(|i| i.to_value()),

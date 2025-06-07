@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize, de::DeserializeSeed as _};
 use serde_json::{Map, Value};
 
 use crate::{
-    BrpError, BrpResult, SchemaTypesMetadata,
+    BrpError, BrpResult, schemas::SchemaTypesMetadata,
     cmd::RemoteCommandSupport,
     error_codes,
     schemas::{

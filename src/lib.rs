@@ -366,21 +366,15 @@
 
 use async_channel::{Receiver, Sender};
 use bevy_app::{MainScheduleOrder, prelude::*};
-use bevy_asset::{ReflectAsset, ReflectHandle};
 use bevy_derive::{Deref, DerefMut};
 use bevy_ecs::{
     entity::Entity,
-    reflect::{ReflectComponent, ReflectResource},
     resource::Resource,
     schedule::{IntoScheduleConfigs, ScheduleLabel, SystemSet},
     system::{Commands, In, IntoSystem, ResMut, System, SystemId},
     world::World,
 };
 use bevy_platform::collections::HashMap;
-use bevy_reflect::{
-    Reflect, ReflectDeserialize, ReflectSerialize, TypeData, TypeRegistration,
-    prelude::ReflectDefault,
-};
 use bevy_utils::prelude::default;
 use builtin_methods::{
     BevyGetCommand, BevyGetResourceCommand, BevyInsertCommand, BevyQueryCommand, BevySpawnCommand,
@@ -554,7 +548,7 @@ impl Plugin for RemotePlugin {
             .insert_after(Last, RemoteLast);
 
         app.insert_resource(remote_methods)
-            .init_resource::<SchemaTypesMetadata>()
+            .init_resource::<schemas::SchemaTypesMetadata>()
             .init_resource::<RemoteWatchingRequests>()
             .add_systems(PreStartup, setup_mailbox_channel)
             .configure_sets(
@@ -642,7 +636,7 @@ pub struct CommandTypeInfo {
 impl RemoteMethodSystemId {
     pub fn remote_type_info(&self) -> Option<CommandTypeInfo> {
         match self {
-            RemoteMethodSystemId::Instant(_system_id, type_info) => type_info.clone(),
+            RemoteMethodSystemId::Instant(_system_id, type_info) => *type_info,
             _ => None,
         }
     }
@@ -691,40 +685,6 @@ impl RemoteMethods {
     }
 }
 
-#[derive(Debug, Resource, Reflect)]
-#[reflect(Resource)]
-pub struct SchemaTypesMetadata {
-    pub data_types: HashMap<TypeId, String>,
-}
-
-impl Default for SchemaTypesMetadata {
-    fn default() -> Self {
-        let mut data_types = Self {
-            data_types: Default::default(),
-        };
-        data_types.register_type::<ReflectComponent>("Component");
-        data_types.register_type::<ReflectResource>("Resource");
-        data_types.register_type::<ReflectDefault>("Default");
-        data_types.register_type::<ReflectAsset>("Asset");
-        data_types.register_type::<ReflectHandle>("AssetHandle");
-        data_types.register_type::<ReflectSerialize>("Serialize");
-        data_types.register_type::<ReflectDeserialize>("Deserialize");
-        data_types
-    }
-}
-
-impl SchemaTypesMetadata {
-    pub fn register_type<T: TypeData>(&mut self, name: impl Into<String>) {
-        self.data_types.insert(TypeId::of::<T>(), name.into());
-    }
-
-    pub fn get_registered_reflect_types(&self, reg: &TypeRegistration) -> Vec<String> {
-        self.data_types
-            .iter()
-            .flat_map(|(id, name)| reg.data_by_id(*id).and(Some(name.clone())))
-            .collect()
-    }
-}
 
 /// Holds the [`BrpMessage`]'s of all ongoing watching requests along with their handlers.
 #[derive(Debug, Resource, Default)]

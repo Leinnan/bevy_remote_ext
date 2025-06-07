@@ -523,7 +523,6 @@ impl JsonSchemaBasic {
                 description: self.description.clone(),
                 ..field_schema
             };
-            return;
         } else {
             self.set_items_fields(fields.map(JsonSchemaBasic::build).collect::<Vec<_>>());
             self.max_items = max_items;
@@ -560,7 +559,7 @@ impl JsonSchemaBasic {
         for field in fields {
             let data = if let Some(type_info) = field
                 .type_info()
-                .and_then(|f| JsonSchemaBasic::get_type_from_optional(f))
+                .and_then(JsonSchemaBasic::get_type_from_optional)
             {
                 JsonSchemaBasic::build(&type_info)
             } else {
@@ -864,9 +863,7 @@ impl BasicTypeInfoBuilder for TypeRegistry {
             missing_definitions
                 .iter()
                 .flat_map(|def| {
-                    let Some(type_reg) = self.get_with_type_path(&def.type_path()) else {
-                        return None;
-                    };
+                    let type_reg = self.get_with_type_path(&def.type_path())?;
                     Some((
                         def.id.clone(),
                         Box::new(self.build_json_schema_from_reg(type_reg)),
@@ -881,9 +878,11 @@ impl BasicTypeInfoBuilder for TypeRegistry {
 
 pub trait JsonSchemaBuilder {
     fn build_json_schema(&self, documentation: Option<String>) -> JsonSchemaBasic {
-        let mut basic_info = JsonSchemaBasic::default();
-        basic_info.schema = Some(SchemaMarker::default());
-        basic_info.description = documentation;
+        let mut basic_info = JsonSchemaBasic{
+            schema: Some(SchemaMarker::default()),
+            description: documentation,
+            ..Default::default()
+        };
         self.feed_data(&mut basic_info);
         basic_info
     }
