@@ -77,8 +77,8 @@ impl TypeRegistrySchemaReader for TypeRegistry {
 pub struct ReflectTypes(Vec<String>);
 
 impl ReflectTypes {
-    pub fn has_data_type<T: TypeData>(&self) -> bool {
-        self.0.contains(&core::any::type_name::<T>().to_string())
+    pub fn has_data_type<T: TypeData>(&self, metadata: &SchemaTypesMetadata) -> bool {
+        metadata.data_types.get(&TypeId::of::<T>()).is_some_and(|s|self.contains(s))
     }
 }
 
@@ -353,11 +353,11 @@ mod tests {
         };
 
         assert!(
-            !schema.reflect_types.has_data_type::<ReflectComponent>(),
+            !schema.reflect_types.has_data_type::<ReflectComponent>(&SchemaTypesMetadata::default()),
             "Should not be a component"
         );
         assert!(
-            schema.reflect_types.has_data_type::<ReflectResource>(),
+            schema.reflect_types.has_data_type::<ReflectResource>(&SchemaTypesMetadata::default()),
             "Should be a resource"
         );
         let _ = schema.properties.get("a").expect("Missing `a` field");
@@ -397,11 +397,11 @@ mod tests {
             panic!("Failed to export type");
         };
         assert!(
-            schema.reflect_types.has_data_type::<ReflectComponent>(),
+            schema.reflect_types.has_data_type::<ReflectComponent>(&SchemaTypesMetadata::default()),
             "Should be a component"
         );
         assert!(
-            !schema.reflect_types.has_data_type::<ReflectResource>(),
+            !schema.reflect_types.has_data_type::<ReflectResource>(&SchemaTypesMetadata::default()),
             "Should not be a resource"
         );
         assert!(schema.properties.is_empty(), "Should not have any field");
@@ -453,11 +453,11 @@ mod tests {
             panic!("Failed to export type");
         };
         assert!(
-            schema.reflect_types.has_data_type::<ReflectComponent>(),
+            schema.reflect_types.has_data_type::<ReflectComponent>(&SchemaTypesMetadata::default()),
             "Should be a component"
         );
         assert!(
-            !schema.reflect_types.has_data_type::<ReflectResource>(),
+            !schema.reflect_types.has_data_type::<ReflectResource>(&SchemaTypesMetadata::default()),
             "Should not be a resource"
         );
         assert!(schema.properties.len() == 1, "Should have 1 field");
@@ -530,11 +530,11 @@ mod tests {
             panic!("Failed to export EnumComponent");
         };
         assert!(
-            !schema.reflect_types.has_data_type::<ReflectComponent>(),
+            !schema.reflect_types.has_data_type::<ReflectComponent>(&SchemaTypesMetadata::default()),
             "Should not be a component"
         );
         assert!(
-            !schema.reflect_types.has_data_type::<ReflectResource>(),
+            !schema.reflect_types.has_data_type::<ReflectResource>(&SchemaTypesMetadata::default()),
             "Should not be a resource"
         );
         assert!(schema.properties.is_empty(), "Should not have any field");
@@ -568,11 +568,11 @@ mod tests {
             panic!("Failed to export type");
         };
         assert!(
-            schema.reflect_types.has_data_type::<ReflectComponent>(),
+            schema.reflect_types.has_data_type::<ReflectComponent>(&SchemaTypesMetadata::default()),
             "Should be a component"
         );
         assert!(
-            !schema.reflect_types.has_data_type::<ReflectResource>(),
+            !schema.reflect_types.has_data_type::<ReflectResource>(&SchemaTypesMetadata::default()),
             "Should not be a resource"
         );
         assert!(schema.properties.is_empty(), "Should not have any field");
@@ -612,8 +612,8 @@ mod tests {
           "crateName": "bevy_remote",
           "default": {"a": 0},
           "reflectTypes": [
-            "bevy_reflect::std_traits::ReflectDefault",
-            "bevy_ecs::reflect::resource::ReflectResource",
+            "Resource",
+            "Default",
           ],
           "kind": "Struct",
           "type": "object",

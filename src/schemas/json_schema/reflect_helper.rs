@@ -143,160 +143,133 @@ impl From<TypeId> for SchemaExtraInfo {
 }
 
 pub trait MinMaxTypeReflectHelper {
+    /// Get the underlaying TypeId
+    fn get_type(&self) -> TypeId;
+
+    /// Compares if is the same type
+    fn is_type<T: Sized + 'static>(&self) -> bool {
+        self.get_type().eq(&TypeId::of::<T>())
+    }
+
+    /// Tries to get attribute data 
+    fn get_data<T: Sized + 'static + GetTypeRegistration + Reflect + TypePath + Clone>(
+            &self
+        ) -> Option<&core::ops::RangeInclusive<T>> {
+            if !self.is_type::<T>(){
+                None
+            } else {
+                self.try_get_range::<T>()
+            }
+        }
+    
+
+    fn try_get_range<T: Sized + 'static + GetTypeRegistration + Reflect + TypePath + Clone>(&self) -> Option<&core::ops::RangeInclusive<T>>;
+
     /// Get the minimum and maximum values for a given type.
-    fn get_min_max_reflect(&self) -> (Option<SchemaNumber>, Option<SchemaNumber>);
-}
-impl MinMaxTypeReflectHelper for UnnamedField {
-    fn get_min_max_reflect(&self) -> (Option<SchemaNumber>, Option<SchemaNumber>) {
-        let value = self.type_id();
-        fn is_type<T: Sized + 'static>(v: TypeId) -> bool {
-            v.eq(&TypeId::of::<T>())
-        }
-
-        fn get_data<T: Sized + 'static + GetTypeRegistration + Reflect + TypePath + Clone>(
-            field: &UnnamedField,
-        ) -> Option<&core::ops::RangeInclusive<T>> {
-            if !is_type::<T>(field.type_id()) {
-                None
-            } else {
-                field.get_attribute::<core::ops::RangeInclusive<T>>()
-            }
-        }
-
-        let (mut min, mut max) = value.get_min_max_reflect();
-        if let Some(data) = get_data::<u8>(self) {
+    fn get_min_max_reflect(&self) -> (Option<SchemaNumber>, Option<SchemaNumber>){
+        let (mut min, mut max) = self.get_base_min_max_for_type();
+        if let Some(data) = self.get_data::<u8>() {
             min = Some(SchemaNumber::PosInt(*data.start() as u64));
             max = Some(SchemaNumber::PosInt(*data.end() as u64));
         }
-        if let Some(data) = get_data::<u16>(self) {
+        if let Some(data) = self.get_data::<u16>() {
             min = Some(SchemaNumber::PosInt(*data.start() as u64));
             max = Some(SchemaNumber::PosInt(*data.end() as u64));
         }
-        if let Some(data) = get_data::<u32>(self) {
+        if let Some(data) = self.get_data::<u32>() {
             min = Some(SchemaNumber::PosInt(*data.start() as u64));
             max = Some(SchemaNumber::PosInt(*data.end() as u64));
         }
-        if let Some(data) = get_data::<u64>(self) {
+        if let Some(data) = self.get_data::<u64>() {
             min = Some(SchemaNumber::PosInt(*data.start() as u64));
             max = Some(SchemaNumber::PosInt(*data.end() as u64));
         }
 
-        if let Some(data) = get_data::<i8>(self) {
+        if let Some(data) = self.get_data::<i8>() {
             min = Some(SchemaNumber::NegInt((*data.start()).into()));
             max = Some(SchemaNumber::NegInt((*data.end()).into()));
         }
-        if let Some(data) = get_data::<i16>(self) {
+        if let Some(data) = self.get_data::<i16>() {
             min = Some(SchemaNumber::NegInt((*data.start()).into()));
             max = Some(SchemaNumber::NegInt((*data.end()).into()));
         }
-        if let Some(data) = get_data::<i32>(self) {
+        if let Some(data) = self.get_data::<i32>() {
             min = Some(SchemaNumber::NegInt((*data.start()).into()));
             max = Some(SchemaNumber::NegInt((*data.end()).into()));
         }
-        if let Some(data) = get_data::<i64>(self) {
+        if let Some(data) = self.get_data::<i64>() {
             min = Some(SchemaNumber::NegInt((*data.start()).into()));
             max = Some(SchemaNumber::NegInt((*data.end()).into()));
         }
         (min, max)
     }
-}
 
-impl MinMaxTypeReflectHelper for NamedField {
-    fn get_min_max_reflect(&self) -> (Option<SchemaNumber>, Option<SchemaNumber>) {
-        let value = self.type_id();
-        fn is_type<T: Sized + 'static>(v: TypeId) -> bool {
-            v.eq(&TypeId::of::<T>())
-        }
-
-        fn get_data<T: Sized + 'static + GetTypeRegistration + Reflect + TypePath + Clone>(
-            field: &NamedField,
-        ) -> Option<&core::ops::RangeInclusive<T>> {
-            if !is_type::<T>(field.type_id()) {
-                None
-            } else {
-                field.get_attribute::<core::ops::RangeInclusive<T>>()
-            }
-        }
-
-        let (mut min, mut max) = value.get_min_max_reflect();
-        if let Some(data) = get_data::<u8>(self) {
-            min = Some(SchemaNumber::PosInt(*data.start() as u64));
-            max = Some(SchemaNumber::PosInt(*data.end() as u64));
-        }
-        if let Some(data) = get_data::<u16>(self) {
-            min = Some(SchemaNumber::PosInt(*data.start() as u64));
-            max = Some(SchemaNumber::PosInt(*data.end() as u64));
-        }
-        if let Some(data) = get_data::<u32>(self) {
-            min = Some(SchemaNumber::PosInt(*data.start() as u64));
-            max = Some(SchemaNumber::PosInt(*data.end() as u64));
-        }
-        if let Some(data) = get_data::<u64>(self) {
-            min = Some(SchemaNumber::PosInt(*data.start() as u64));
-            max = Some(SchemaNumber::PosInt(*data.end() as u64));
-        }
-
-        if let Some(data) = get_data::<i8>(self) {
-            min = Some(SchemaNumber::NegInt((*data.start()).into()));
-            max = Some(SchemaNumber::NegInt((*data.end()).into()));
-        }
-        if let Some(data) = get_data::<i16>(self) {
-            min = Some(SchemaNumber::NegInt((*data.start()).into()));
-            max = Some(SchemaNumber::NegInt((*data.end()).into()));
-        }
-        if let Some(data) = get_data::<i32>(self) {
-            min = Some(SchemaNumber::NegInt((*data.start()).into()));
-            max = Some(SchemaNumber::NegInt((*data.end()).into()));
-        }
-        if let Some(data) = get_data::<i64>(self) {
-            min = Some(SchemaNumber::NegInt((*data.start()).into()));
-            max = Some(SchemaNumber::NegInt((*data.end()).into()));
-        }
-        (min, max)
-    }
-}
-
-impl MinMaxTypeReflectHelper for TypeId {
-    fn get_min_max_reflect(&self) -> (Option<SchemaNumber>, Option<SchemaNumber>) {
-        fn is_type<T: Sized + 'static>(v: &TypeId) -> bool {
-            v.eq(&TypeId::of::<T>())
-        }
-
+    fn get_base_min_max_for_type(&self) -> (Option<SchemaNumber>, Option<SchemaNumber>){
         let mut min: Option<SchemaNumber> = None;
         let mut max: Option<SchemaNumber> = None;
-        if is_type::<u8>(self) {
+        if self.is_type::<u8>() {
             min = Some(SchemaNumber::PosInt(0));
             max = Some(SchemaNumber::PosInt(u8::MAX.into()));
         }
-        if is_type::<u16>(self) {
+        if self.is_type::<u16>() {
             min = Some(SchemaNumber::PosInt(0));
             max = Some(SchemaNumber::PosInt(u16::MAX.into()));
         }
-        if is_type::<u32>(self) {
+        if self.is_type::<u32>() {
             min = Some(SchemaNumber::PosInt(0));
             max = Some(SchemaNumber::PosInt(u32::MAX.into()));
         }
-        if is_type::<u64>(self) {
+        if self.is_type::<u64>() {
             min = Some(SchemaNumber::PosInt(0));
         }
-        if is_type::<u128>(self) {
+        if self.is_type::<u128>() {
             min = Some(SchemaNumber::PosInt(0));
         }
-        if is_type::<usize>(self) {
+        if self.is_type::<usize>() {
             min = Some(SchemaNumber::PosInt(0));
         }
-        if is_type::<i8>(self) {
+        if self.is_type::<i8>() {
             min = Some(SchemaNumber::NegInt(i8::MIN.into()));
             max = Some(SchemaNumber::NegInt(i8::MAX.into()));
         }
-        if is_type::<i16>(self) {
+        if self.is_type::<i16>() {
             min = Some(SchemaNumber::NegInt(i16::MIN.into()));
             max = Some(SchemaNumber::NegInt(i16::MAX.into()));
         }
-        if is_type::<i32>(self) {
+        if self.is_type::<i32>() {
             min = Some(SchemaNumber::NegInt(i32::MIN.into()));
             max = Some(SchemaNumber::NegInt(i32::MAX.into()));
         }
         (min, max)
+    }
+}
+impl MinMaxTypeReflectHelper for UnnamedField {
+    
+    fn get_type(&self) -> TypeId {
+        self.type_id()
+    }
+    
+    fn try_get_range<T: Sized + 'static + GetTypeRegistration + Reflect + TypePath + Clone>(&self) -> Option<&core::ops::RangeInclusive<T>> {
+        self.get_attribute::<core::ops::RangeInclusive<T>>()
+    }
+}
+
+impl MinMaxTypeReflectHelper for NamedField {
+    fn get_type(&self) -> TypeId {
+        self.type_id()
+    }
+    
+    fn try_get_range<T: Sized + 'static + GetTypeRegistration + Reflect + TypePath + Clone>(&self) -> Option<&core::ops::RangeInclusive<T>> {
+        self.get_attribute::<core::ops::RangeInclusive<T>>()
+    }
+}
+
+impl MinMaxTypeReflectHelper for TypeId {
+    fn get_type(&self) -> TypeId {
+        *self
+    }
+
+    fn try_get_range<T: Sized + 'static + GetTypeRegistration + Reflect + TypePath + Clone>(&self) -> Option<&core::ops::RangeInclusive<T>> {
+        None
     }
 }
