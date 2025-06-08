@@ -16,7 +16,6 @@ use crate::schemas::SchemaTypesMetadata;
 pub mod json_schema;
 pub mod reflect_helper;
 
-
 pub trait TypeRegistrySchemaReader: BasicTypeInfoBuilder {
     /// Export type JSON Schema with definitions.
     /// It can be useful for generating schemas for assets validation.
@@ -80,7 +79,7 @@ pub struct ReflectTypes(Vec<String>);
 
 impl ReflectTypes {
     pub fn has_data_type<T: TypeData>(&self, metadata: &SchemaTypesMetadata) -> bool {
-        metadata.data_types.get(&TypeId::of::<T>()).is_some_and(|s|self.contains(s))
+        metadata.has_type_data::<T>(self.as_slice())
     }
 }
 
@@ -279,11 +278,7 @@ impl From<&JsonSchemaBasic> for JsonSchemaBevyType {
                 .collect(),
             required: value.required.clone(),
             default_value: value.default_value.clone(),
-            one_of: value
-                .one_of
-                .iter()
-                .flat_map(serde_json::to_value)
-                .collect(),
+            one_of: value.one_of.iter().flat_map(serde_json::to_value).collect(),
             prefix_items: value.prefix_items.iter().map(|f| f.to_value()).collect(),
             items: value.items.as_ref().map(|i| i.to_value()),
             min_items: value.min_items,
@@ -354,11 +349,15 @@ mod tests {
         };
 
         assert!(
-            !schema.reflect_types.has_data_type::<ReflectComponent>(&SchemaTypesMetadata::default()),
+            !schema
+                .reflect_types
+                .has_data_type::<ReflectComponent>(&SchemaTypesMetadata::default()),
             "Should not be a component"
         );
         assert!(
-            schema.reflect_types.has_data_type::<ReflectResource>(&SchemaTypesMetadata::default()),
+            schema
+                .reflect_types
+                .has_data_type::<ReflectResource>(&SchemaTypesMetadata::default()),
             "Should be a resource"
         );
         let _ = schema.properties.get("a").expect("Missing `a` field");
@@ -398,11 +397,15 @@ mod tests {
             panic!("Failed to export type");
         };
         assert!(
-            schema.reflect_types.has_data_type::<ReflectComponent>(&SchemaTypesMetadata::default()),
+            schema
+                .reflect_types
+                .has_data_type::<ReflectComponent>(&SchemaTypesMetadata::default()),
             "Should be a component"
         );
         assert!(
-            !schema.reflect_types.has_data_type::<ReflectResource>(&SchemaTypesMetadata::default()),
+            !schema
+                .reflect_types
+                .has_data_type::<ReflectResource>(&SchemaTypesMetadata::default()),
             "Should not be a resource"
         );
         assert!(schema.properties.is_empty(), "Should not have any field");
@@ -454,11 +457,15 @@ mod tests {
             panic!("Failed to export type");
         };
         assert!(
-            schema.reflect_types.has_data_type::<ReflectComponent>(&SchemaTypesMetadata::default()),
+            schema
+                .reflect_types
+                .has_data_type::<ReflectComponent>(&SchemaTypesMetadata::default()),
             "Should be a component"
         );
         assert!(
-            !schema.reflect_types.has_data_type::<ReflectResource>(&SchemaTypesMetadata::default()),
+            !schema
+                .reflect_types
+                .has_data_type::<ReflectResource>(&SchemaTypesMetadata::default()),
             "Should not be a resource"
         );
         assert!(schema.properties.len() == 1, "Should have 1 field");
@@ -531,11 +538,15 @@ mod tests {
             panic!("Failed to export EnumComponent");
         };
         assert!(
-            !schema.reflect_types.has_data_type::<ReflectComponent>(&SchemaTypesMetadata::default()),
+            !schema
+                .reflect_types
+                .has_data_type::<ReflectComponent>(&SchemaTypesMetadata::default()),
             "Should not be a component"
         );
         assert!(
-            !schema.reflect_types.has_data_type::<ReflectResource>(&SchemaTypesMetadata::default()),
+            !schema
+                .reflect_types
+                .has_data_type::<ReflectResource>(&SchemaTypesMetadata::default()),
             "Should not be a resource"
         );
         assert!(schema.properties.is_empty(), "Should not have any field");
@@ -569,15 +580,73 @@ mod tests {
             panic!("Failed to export type");
         };
         assert!(
-            schema.reflect_types.has_data_type::<ReflectComponent>(&SchemaTypesMetadata::default()),
+            schema
+                .reflect_types
+                .has_data_type::<ReflectComponent>(&SchemaTypesMetadata::default()),
             "Should be a component"
         );
         assert!(
-            !schema.reflect_types.has_data_type::<ReflectResource>(&SchemaTypesMetadata::default()),
+            !schema
+                .reflect_types
+                .has_data_type::<ReflectResource>(&SchemaTypesMetadata::default()),
             "Should not be a resource"
         );
         assert!(schema.properties.is_empty(), "Should not have any field");
         assert!(schema.prefix_items.len() == 2, "Should have 2 prefix items");
+    }
+
+    #[test]
+    fn reflect_struct_with_custom_type_data() {
+        #[derive(Reflect, Default, Deserialize, Serialize)]
+        #[reflect(Default)]
+        enum EnumComponent {
+            ValueOne(i32),
+            ValueTwo {
+                test: i32,
+            },
+            #[default]
+            NoValue,
+        }
+
+        #[derive(Clone)]
+        pub struct ReflectCustomData;
+
+        impl<T: Reflect> bevy_reflect::FromType<T> for ReflectCustomData {
+            fn from_type() -> Self {
+                ReflectCustomData
+            }
+        }
+
+        let atr = AppTypeRegistry::default();
+        {
+            let mut register = atr.write();
+            register.register::<EnumComponent>();
+            register.register_type_data::<EnumComponent, ReflectCustomData>();
+        }
+        let mut metadata = SchemaTypesMetadata::default();
+        metadata.map_type_data::<ReflectCustomData>("CustomData");
+        let type_registry = atr.read();
+        let Some(schema) = type_registry.export_type_json_schema::<EnumComponent>(&metadata) else {
+            panic!("Failed to export type");
+        };
+        assert!(
+            !metadata.has_type_data::<ReflectComponent>(&schema.reflect_types),
+            "Should not be a component"
+        );
+        assert!(
+            !metadata.has_type_data::<ReflectResource>(&schema.reflect_types),
+            "Should not be a resource"
+        );
+        assert!(
+            metadata.has_type_data::<ReflectDefault>(&schema.reflect_types),
+            "Should have default"
+        );
+        assert!(
+            metadata.has_type_data::<ReflectCustomData>(&schema.reflect_types),
+            "Should have CustomData"
+        );
+        assert!(schema.properties.is_empty(), "Should not have any field");
+        assert!(schema.one_of.len() == 3, "Should have 3 possible schemas");
     }
 
     #[test]

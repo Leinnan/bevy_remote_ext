@@ -85,39 +85,39 @@ pub struct SchemaExtraInfo {
 
 impl SchemaExtraInfo {
     pub fn just_docs<T: ReflectDocReader>(ty: &T) -> Self {
-        SchemaExtraInfo{
+        SchemaExtraInfo {
             documentation: ty.to_description(),
             ..Default::default()
         }
     }
-    pub fn docs_with_type<T: ReflectDocReader>(ty: &T, type_id: &TypeId) -> Self {        
+    pub fn docs_with_type<T: ReflectDocReader>(ty: &T, type_id: &TypeId) -> Self {
         let (min_value, max_value) = type_id.get_min_max_reflect();
-        SchemaExtraInfo{
+        SchemaExtraInfo {
             documentation: ty.to_description(),
             min_value,
-            max_value
+            max_value,
         }
     }
 }
 
 impl From<&UnnamedField> for SchemaExtraInfo {
     fn from(field: &UnnamedField) -> Self {
-        let (min_value, max_value) = field.type_id().get_min_max_reflect();
-        SchemaExtraInfo{
+        let (min_value, max_value) = field.get_min_max_reflect();
+        SchemaExtraInfo {
             documentation: field.to_description(),
             min_value,
-            max_value
+            max_value,
         }
     }
 }
 
 impl From<&NamedField> for SchemaExtraInfo {
     fn from(field: &NamedField) -> Self {
-        let (min_value, max_value) = field.type_id().get_min_max_reflect();
-        SchemaExtraInfo{
+        let (min_value, max_value) = field.get_min_max_reflect();
+        SchemaExtraInfo {
             documentation: field.to_description(),
             min_value,
-            max_value
+            max_value,
         }
     }
 }
@@ -125,10 +125,10 @@ impl From<&NamedField> for SchemaExtraInfo {
 impl From<&TypeInfo> for SchemaExtraInfo {
     fn from(type_info: &TypeInfo) -> Self {
         let (min_value, max_value) = type_info.type_id().get_min_max_reflect();
-        SchemaExtraInfo{
+        SchemaExtraInfo {
             documentation: type_info.to_description(),
             min_value,
-            max_value
+            max_value,
         }
     }
 }
@@ -152,22 +152,23 @@ pub trait MinMaxTypeReflectHelper {
         self.get_type().eq(&TypeId::of::<T>())
     }
 
-    /// Tries to get attribute data 
+    /// Tries to get attribute data
     fn get_data<T: Sized + 'static + GetTypeRegistration + Reflect + TypePath + Clone>(
-            &self
-        ) -> Option<&core::ops::RangeInclusive<T>> {
-            if !self.is_type::<T>(){
-                None
-            } else {
-                self.try_get_range::<T>()
-            }
+        &self,
+    ) -> Option<&core::ops::RangeInclusive<T>> {
+        if !self.is_type::<T>() {
+            None
+        } else {
+            self.try_get_range::<T>()
         }
-    
+    }
 
-    fn try_get_range<T: Sized + 'static + GetTypeRegistration + Reflect + TypePath + Clone>(&self) -> Option<&core::ops::RangeInclusive<T>>;
+    fn try_get_range<T: Sized + 'static + GetTypeRegistration + Reflect + TypePath + Clone>(
+        &self,
+    ) -> Option<&core::ops::RangeInclusive<T>>;
 
     /// Get the minimum and maximum values for a given type.
-    fn get_min_max_reflect(&self) -> (Option<SchemaNumber>, Option<SchemaNumber>){
+    fn get_min_max_reflect(&self) -> (Option<SchemaNumber>, Option<SchemaNumber>) {
         let (mut min, mut max) = self.get_base_min_max_for_type();
         if let Some(data) = self.get_data::<u8>() {
             min = Some(SchemaNumber::PosInt(*data.start() as u64));
@@ -205,7 +206,7 @@ pub trait MinMaxTypeReflectHelper {
         (min, max)
     }
 
-    fn get_base_min_max_for_type(&self) -> (Option<SchemaNumber>, Option<SchemaNumber>){
+    fn get_base_min_max_for_type(&self) -> (Option<SchemaNumber>, Option<SchemaNumber>) {
         let mut min: Option<SchemaNumber> = None;
         let mut max: Option<SchemaNumber> = None;
         if self.is_type::<u8>() {
@@ -245,12 +246,13 @@ pub trait MinMaxTypeReflectHelper {
     }
 }
 impl MinMaxTypeReflectHelper for UnnamedField {
-    
     fn get_type(&self) -> TypeId {
         self.type_id()
     }
-    
-    fn try_get_range<T: Sized + 'static + GetTypeRegistration + Reflect + TypePath + Clone>(&self) -> Option<&core::ops::RangeInclusive<T>> {
+
+    fn try_get_range<T: Sized + 'static + GetTypeRegistration + Reflect + TypePath + Clone>(
+        &self,
+    ) -> Option<&core::ops::RangeInclusive<T>> {
         self.get_attribute::<core::ops::RangeInclusive<T>>()
     }
 }
@@ -259,8 +261,10 @@ impl MinMaxTypeReflectHelper for NamedField {
     fn get_type(&self) -> TypeId {
         self.type_id()
     }
-    
-    fn try_get_range<T: Sized + 'static + GetTypeRegistration + Reflect + TypePath + Clone>(&self) -> Option<&core::ops::RangeInclusive<T>> {
+
+    fn try_get_range<T: Sized + 'static + GetTypeRegistration + Reflect + TypePath + Clone>(
+        &self,
+    ) -> Option<&core::ops::RangeInclusive<T>> {
         self.get_attribute::<core::ops::RangeInclusive<T>>()
     }
 }
@@ -270,7 +274,9 @@ impl MinMaxTypeReflectHelper for TypeId {
         *self
     }
 
-    fn try_get_range<T: Sized + 'static + GetTypeRegistration + Reflect + TypePath + Clone>(&self) -> Option<&core::ops::RangeInclusive<T>> {
+    fn try_get_range<T: Sized + 'static + GetTypeRegistration + Reflect + TypePath + Clone>(
+        &self,
+    ) -> Option<&core::ops::RangeInclusive<T>> {
         None
     }
 }

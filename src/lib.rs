@@ -364,6 +364,8 @@
 //! [fully-qualified type names]: bevy_reflect::TypePath::type_path
 //! [fully-qualified type name]: bevy_reflect::TypePath::type_path
 
+extern crate alloc;
+
 use async_channel::{Receiver, Sender};
 use bevy_app::{MainScheduleOrder, prelude::*};
 use bevy_derive::{Deref, DerefMut};
@@ -684,7 +686,6 @@ impl RemoteMethods {
         self.keys().cloned().collect()
     }
 }
-
 
 /// Holds the [`BrpMessage`]'s of all ongoing watching requests along with their handlers.
 #[derive(Debug, Resource, Default)]

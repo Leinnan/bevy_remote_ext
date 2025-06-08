@@ -178,7 +178,8 @@ impl OpenRpcBuilder for &TypeRegistry {
                 };
                 if let Some(typed_info) = id.remote_type_info() {
                     if let Some(mut schema) = self
-                        .get(typed_info.arg_type).map(|r| self.build_json_schema_from_reg(r))
+                        .get(typed_info.arg_type)
+                        .map(|r| self.build_json_schema_from_reg(r))
                     {
                         if typed_info.arg_type != empty_type_id {
                             if schema.ref_type.as_ref().is_some_and(|f| f.is_local()) {
@@ -199,7 +200,8 @@ impl OpenRpcBuilder for &TypeRegistry {
 
                     if typed_info.response_type != empty_type_id {
                         if let Some(mut schema) = self
-                            .get(typed_info.response_type).map(|r| self.build_json_schema_from_reg(r))
+                            .get(typed_info.response_type)
+                            .map(|r| self.build_json_schema_from_reg(r))
                         {
                             schema.change_referenced_types_location(
                                 super::json_schema::json_schema::ReferenceLocation::Components,

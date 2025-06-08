@@ -23,9 +23,10 @@ use serde::{Deserialize, Serialize, de::DeserializeSeed as _};
 use serde_json::{Map, Value};
 
 use crate::{
-    BrpError, BrpResult, schemas::SchemaTypesMetadata,
+    BrpError, BrpResult,
     cmd::RemoteCommandSupport,
     error_codes,
+    schemas::SchemaTypesMetadata,
     schemas::{
         json_schema::{JsonSchemaBevyType, TypeRegistrySchemaReader, json_schema::SchemaMarker},
         open_rpc::{OpenRpcBuilder, OpenRpcDocument},

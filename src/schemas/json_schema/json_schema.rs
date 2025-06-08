@@ -878,7 +878,7 @@ impl BasicTypeInfoBuilder for TypeRegistry {
 
 pub trait JsonSchemaBuilder {
     fn build_json_schema(&self, documentation: Option<String>) -> JsonSchemaBasic {
-        let mut basic_info = JsonSchemaBasic{
+        let mut basic_info = JsonSchemaBasic {
             schema: Some(SchemaMarker::default()),
             description: documentation,
             ..Default::default()
