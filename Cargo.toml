@@ -9,10 +9,10 @@ license = "MIT OR Apache-2.0"
 keywords = ["bevy"]
 
 [features]
-default = ["http", "documentation", "glam", "bevy_asset"]
+default = ["http", "bevy_asset", "documentation", "bevy_math"]
 http = ["dep:async-io", "dep:smol-hyper"]
 documentation = ["bevy_reflect/documentation"]
-glam = ["dep:glam", "bevy_reflect/glam"]
+bevy_math = ["dep:bevy_math", "bevy_reflect/glam"]
 bevy_asset = ["dep:bevy_asset"]
 
 [dependencies]
@@ -32,6 +32,7 @@ bevy_asset = { version = "0.16.1", optional = true }
 glam = { version = "0.29.3", default-features = false, features = [
     "serde",
 ], optional = true }
+bevy_math = { version = "0.16.1", optional = true }
 # other
 anyhow = "1"
 hyper = { version = "1", features = ["server", "http1"] }

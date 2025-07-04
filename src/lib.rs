@@ -383,10 +383,12 @@ use builtin_methods::{
     RpcDiscoverCommand,
 };
 use cmd::{RemoteCommandAppExt, RemoteCommandSupport};
-use schemas::{json_schema::json_schema::ReflectJsonSchema, open_rpc::OpenRpcDocument};
+use schemas::open_rpc::OpenRpcDocument;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{any::TypeId, hash::Hash, sync::RwLock};
+
+use crate::schemas::ReflectJsonSchema;
 
 pub mod builtin_methods;
 pub mod cmd;
@@ -518,7 +520,9 @@ impl Default for RemotePlugin {
 
 impl Plugin for RemotePlugin {
     fn build(&self, app: &mut App) {
-        app.register_type_data::<glam::Vec3, ReflectJsonSchema>();
+        app.register_type::<schemas::open_rpc::OpenRpcDocument>()
+            .register_type_data::<schemas::open_rpc::OpenRpcDocument, schemas::ReflectJsonSchema>();
+
         let mut remote_methods = RemoteMethods::new();
 
         let plugin_methods = &mut *self.methods.write().unwrap();
