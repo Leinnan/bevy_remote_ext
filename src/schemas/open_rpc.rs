@@ -6,11 +6,11 @@ use bevy_utils::default;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    RemoteMethods,
     schemas::{
-        ReflectJsonSchema,
         reflect_info::{ReferenceLocation, TypeReferencePath},
+        ReflectJsonSchema,
     },
+    RemoteMethods,
 };
 
 use super::json_schema::JsonSchemaBevyType;

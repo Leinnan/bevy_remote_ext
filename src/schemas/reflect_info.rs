@@ -1,17 +1,27 @@
 //! Module containing information about reflected types.
+use crate::schemas::json_schema::{
+    JsonSchemaBevyType, JsonSchemaVariant, SchemaKind, SchemaType, SchemaTypeVariant,
+};
+use crate::schemas::{ReflectJsonSchemaForceAsArray, SchemaTypesMetadata};
 use alloc::borrow::Cow;
 use alloc::sync::Arc;
 use bevy_derive::{Deref, DerefMut};
-use bevy_platform::collections::HashMap;
+use bevy_ecs::name::Name;
+use bevy_platform::collections::{HashMap, HashSet};
+use bevy_platform::sync::LazyLock;
 use bevy_reflect::attributes::CustomAttributes;
 use bevy_reflect::{
     EnumInfo, GenericInfo, NamedField, Reflect, Type, TypeInfo, TypePathTable, TypeRegistration,
-    UnnamedField, VariantInfo,
+    TypeRegistry, UnnamedField, VariantInfo,
 };
 use bevy_utils::{TypeIdMap, default};
 use core::any::TypeId;
 use core::fmt;
 use core::fmt::{Display, Formatter};
+use core::num::{
+    NonZeroI8, NonZeroI16, NonZeroI32, NonZeroI64, NonZeroI128, NonZeroIsize, NonZeroU8,
+    NonZeroU16, NonZeroU32, NonZeroU64, NonZeroU128, NonZeroUsize,
+};
 use core::slice::Iter;
 use core::{
     any::Any,
@@ -21,10 +31,221 @@ use core::{
 use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::schemas::json_schema::{
-    JsonSchemaBevyType, JsonSchemaVariant, SchemaKind, SchemaType, SchemaTypeVariant,
+#[derive(Default)]
+pub(super) struct PrimitiveTypeInfo {
+    pub schema_type: SchemaType,
+    pub schema_kind: SchemaKind,
+    pub min: Option<BoundValue>,
+    pub max: Option<BoundValue>,
+    pub not: Option<SchemaNumber>,
+}
+
+const PRIMITIVE_VALUE: PrimitiveTypeInfo = PrimitiveTypeInfo {
+    schema_kind: SchemaKind::Value,
+    schema_type: SchemaType::Object,
+    min: None,
+    max: None,
+    not: None,
 };
-use crate::schemas::{ReflectJsonSchemaForceAsArray, SchemaTypesMetadata};
+
+const PRIMITIVE_FLOAT: PrimitiveTypeInfo = PrimitiveTypeInfo {
+    schema_kind: SchemaKind::Value,
+    schema_type: SchemaType::Number,
+    ..PRIMITIVE_VALUE
+};
+const PRIMITIVE_INTEGER: PrimitiveTypeInfo = PrimitiveTypeInfo {
+    schema_kind: SchemaKind::Value,
+    schema_type: SchemaType::Integer,
+    ..PRIMITIVE_VALUE
+};
+const PRIMITIVE_UNSIGNED_INTEGER: PrimitiveTypeInfo = PrimitiveTypeInfo {
+    min: Some(BoundValue::Inclusive(SchemaNumber::Int(0))),
+    ..PRIMITIVE_INTEGER
+};
+const PRIMITIVE_STRING: PrimitiveTypeInfo = PrimitiveTypeInfo {
+    schema_type: SchemaType::String,
+    ..PRIMITIVE_VALUE
+};
+
+pub(super) static BASE_TYPES_INFO: LazyLock<HashMap<TypeId, PrimitiveTypeInfo>> =
+    LazyLock::new(|| {
+        [
+            (
+                TypeId::of::<bool>(),
+                PrimitiveTypeInfo {
+                    schema_type: SchemaType::Boolean,
+                    ..PRIMITIVE_VALUE
+                },
+            ),
+            (TypeId::of::<f32>(), PRIMITIVE_FLOAT),
+            (TypeId::of::<f64>(), PRIMITIVE_FLOAT),
+            (
+                TypeId::of::<i8>(),
+                PrimitiveTypeInfo {
+                    min: Some(BoundValue::Inclusive(SchemaNumber::Int(i8::MIN as i128))),
+                    max: Some(BoundValue::Inclusive(SchemaNumber::Int(i8::MAX as i128))),
+                    ..PRIMITIVE_INTEGER
+                },
+            ),
+            (
+                TypeId::of::<i16>(),
+                PrimitiveTypeInfo {
+                    min: Some(BoundValue::Inclusive(SchemaNumber::Int(i16::MIN as i128))),
+                    max: Some(BoundValue::Inclusive(SchemaNumber::Int(i16::MAX as i128))),
+                    ..PRIMITIVE_INTEGER
+                },
+            ),
+            (
+                TypeId::of::<i32>(),
+                PrimitiveTypeInfo {
+                    min: Some(BoundValue::Inclusive(SchemaNumber::Int(i32::MIN as i128))),
+                    max: Some(BoundValue::Inclusive(SchemaNumber::Int(i32::MAX as i128))),
+                    ..PRIMITIVE_INTEGER
+                },
+            ),
+            (TypeId::of::<i64>(), PRIMITIVE_INTEGER),
+            (TypeId::of::<i128>(), PRIMITIVE_INTEGER),
+            (TypeId::of::<i128>(), PRIMITIVE_INTEGER),
+            (TypeId::of::<isize>(), PRIMITIVE_INTEGER),
+            (
+                TypeId::of::<u8>(),
+                PrimitiveTypeInfo {
+                    max: Some(BoundValue::Inclusive(SchemaNumber::Int(u8::MAX as i128))),
+                    ..PRIMITIVE_UNSIGNED_INTEGER
+                },
+            ),
+            (
+                TypeId::of::<u16>(),
+                PrimitiveTypeInfo {
+                    max: Some(BoundValue::Inclusive(SchemaNumber::Int(u16::MAX as i128))),
+                    ..PRIMITIVE_UNSIGNED_INTEGER
+                },
+            ),
+            (
+                TypeId::of::<u32>(),
+                PrimitiveTypeInfo {
+                    max: Some(BoundValue::Inclusive(SchemaNumber::Int(u32::MAX as i128))),
+                    ..PRIMITIVE_UNSIGNED_INTEGER
+                },
+            ),
+            (TypeId::of::<u64>(), PRIMITIVE_UNSIGNED_INTEGER),
+            (TypeId::of::<u128>(), PRIMITIVE_UNSIGNED_INTEGER),
+            (TypeId::of::<usize>(), PRIMITIVE_UNSIGNED_INTEGER),
+            (
+                TypeId::of::<bevy_ecs::entity::Entity>(),
+                PrimitiveTypeInfo {
+                    schema_kind: SchemaKind::Struct,
+                    min: Some(BoundValue::Exclusive(SchemaNumber::Int(0))),
+                    ..PRIMITIVE_UNSIGNED_INTEGER
+                },
+            ),
+            (
+                TypeId::of::<NonZeroI8>(),
+                PrimitiveTypeInfo {
+                    min: Some(BoundValue::Inclusive(SchemaNumber::Int(i8::MIN as i128))),
+                    max: Some(BoundValue::Inclusive(SchemaNumber::Int(i8::MAX as i128))),
+                    not: Some(SchemaNumber::Int(0)),
+                    ..PRIMITIVE_INTEGER
+                },
+            ),
+            (
+                TypeId::of::<NonZeroI16>(),
+                PrimitiveTypeInfo {
+                    min: Some(BoundValue::Inclusive(SchemaNumber::Int(i16::MIN as i128))),
+                    max: Some(BoundValue::Inclusive(SchemaNumber::Int(i16::MAX as i128))),
+                    not: Some(SchemaNumber::Int(0)),
+                    ..PRIMITIVE_INTEGER
+                },
+            ),
+            (
+                TypeId::of::<NonZeroI32>(),
+                PrimitiveTypeInfo {
+                    min: Some(BoundValue::Inclusive(SchemaNumber::Int(i32::MIN as i128))),
+                    max: Some(BoundValue::Inclusive(SchemaNumber::Int(i32::MAX as i128))),
+                    not: Some(SchemaNumber::Int(0)),
+                    ..PRIMITIVE_INTEGER
+                },
+            ),
+            (
+                TypeId::of::<NonZeroI64>(),
+                PrimitiveTypeInfo {
+                    not: Some(SchemaNumber::Int(0)),
+                    ..PRIMITIVE_INTEGER
+                },
+            ),
+            (
+                TypeId::of::<NonZeroI128>(),
+                PrimitiveTypeInfo {
+                    not: Some(SchemaNumber::Int(0)),
+                    ..PRIMITIVE_INTEGER
+                },
+            ),
+            (
+                TypeId::of::<NonZeroIsize>(),
+                PrimitiveTypeInfo {
+                    not: Some(SchemaNumber::Int(0)),
+                    ..PRIMITIVE_INTEGER
+                },
+            ),
+            (
+                TypeId::of::<NonZeroUsize>(),
+                PrimitiveTypeInfo {
+                    min: Some(BoundValue::Inclusive(SchemaNumber::Int(1))),
+                    ..PRIMITIVE_INTEGER
+                },
+            ),
+            (
+                TypeId::of::<NonZeroU8>(),
+                PrimitiveTypeInfo {
+                    min: Some(BoundValue::Inclusive(SchemaNumber::Int(1))),
+                    max: Some(BoundValue::Inclusive(SchemaNumber::Int(u8::MAX as i128))),
+                    ..PRIMITIVE_UNSIGNED_INTEGER
+                },
+            ),
+            (
+                TypeId::of::<NonZeroU16>(),
+                PrimitiveTypeInfo {
+                    min: Some(BoundValue::Inclusive(SchemaNumber::Int(1))),
+                    max: Some(BoundValue::Inclusive(SchemaNumber::Int(u16::MAX as i128))),
+                    ..PRIMITIVE_UNSIGNED_INTEGER
+                },
+            ),
+            (
+                TypeId::of::<NonZeroU32>(),
+                PrimitiveTypeInfo {
+                    min: Some(BoundValue::Inclusive(SchemaNumber::Int(1))),
+                    max: Some(BoundValue::Inclusive(SchemaNumber::Int(u32::MAX as i128))),
+                    ..PRIMITIVE_UNSIGNED_INTEGER
+                },
+            ),
+            (
+                TypeId::of::<NonZeroU64>(),
+                PrimitiveTypeInfo {
+                    min: Some(BoundValue::Inclusive(SchemaNumber::Int(1))),
+                    ..PRIMITIVE_UNSIGNED_INTEGER
+                },
+            ),
+            (
+                TypeId::of::<NonZeroU128>(),
+                PrimitiveTypeInfo {
+                    min: Some(BoundValue::Inclusive(SchemaNumber::Int(1))),
+                    ..PRIMITIVE_INTEGER
+                },
+            ),
+            (TypeId::of::<String>(), PRIMITIVE_STRING),
+            (TypeId::of::<Cow<str>>(), PRIMITIVE_STRING),
+            (TypeId::of::<char>(), PRIMITIVE_STRING),
+            (TypeId::of::<str>(), PRIMITIVE_STRING),
+            (
+                TypeId::of::<Name>(),
+                PrimitiveTypeInfo {
+                    schema_kind: SchemaKind::Struct,
+                    ..PRIMITIVE_STRING
+                },
+            ),
+        ]
+        .into()
+    });
 
 #[derive(
     Debug,
@@ -49,42 +270,35 @@ impl Display for TypeReferenceId {
     }
 }
 
-impl TypeReferenceId {
-    /// Returns the type path of the reference.
-    pub fn type_path(&self) -> String {
-        self.replace("-", "::")
+impl From<&str> for TypeReferenceId {
+    fn from(t: &str) -> Self {
+        TypeReferenceId(
+            t.replace("::", "__")
+                .replace(", ", ".")
+                .replace(")", "~")
+                .replace("(", "~")
+                .replace(">", "-")
+                .replace("<", "-")
+                .into(),
+        )
     }
 }
 
 impl From<&Type> for TypeReferenceId {
     fn from(t: &Type) -> Self {
-        TypeReferenceId(t.path().replace("::", "-").into())
+        t.path().into()
     }
 }
 
 impl From<&TypePathTable> for TypeReferenceId {
     fn from(t: &TypePathTable) -> Self {
-        TypeReferenceId(t.path().replace("::", "-").into())
+        t.path().into()
     }
-}
-impl From<&str> for TypeReferenceId {
-    fn from(t: &str) -> Self {
-        TypeReferenceId(t.replace("::", "-").into())
-    }
-}
-
-/// Information about the attributes of a field.
-#[derive(Clone, Debug)]
-pub struct FieldInformation {
-    /// Field specific data
-    field: SchemaFieldData,
-    /// Type information of the field.
-    type_info: TypeInformation,
 }
 
 /// Information about the field type.
 #[derive(Clone, Debug, PartialEq, PartialOrd, Ord, Eq, Hash, Default)]
-pub enum FieldType {
+pub(crate) enum FieldType {
     /// Named field type.
     Named,
     /// Unnamed field type.
@@ -96,51 +310,17 @@ pub enum FieldType {
 
 /// Information about the attributes of a field.
 #[derive(Clone, Debug, Deref, DerefMut, Default)]
-pub struct FieldsInformation {
+pub(crate) struct FieldsInformation {
     /// Fields information.
     #[deref]
-    fields: Vec<FieldInformation>,
+    fields: Vec<SchemaFieldData>,
     /// Field type information.
     fields_type: FieldType,
 }
 
-impl From<&TypeInformation> for Option<FieldsInformation> {
-    fn from(value: &TypeInformation) -> Self {
-        let info = value.try_get_type_info()?;
-        let (fields, fields_type) = match info {
-            TypeInfo::Struct(struct_info) => (
-                get_fields_information(struct_info.iter()),
-                if value.is_forced_as_array() {
-                    FieldType::ForceUnnamed
-                } else {
-                    FieldType::Named
-                },
-            ),
-            TypeInfo::TupleStruct(tuple_struct_info) => (
-                get_fields_information(tuple_struct_info.iter()),
-                FieldType::Unnamed,
-            ),
-            TypeInfo::Tuple(tuple_info) => (
-                get_fields_information(tuple_info.iter()),
-                FieldType::Unnamed,
-            ),
-            TypeInfo::List(_)
-            | TypeInfo::Array(_)
-            | TypeInfo::Map(_)
-            | TypeInfo::Set(_)
-            | TypeInfo::Enum(_)
-            | TypeInfo::Opaque(_) => return None,
-        };
-        Some(FieldsInformation {
-            fields,
-            fields_type,
-        })
-    }
-}
-
 #[derive(Clone, Debug, Deref)]
 /// Information about the attributes of a field.
-pub struct AttributesInformation(Arc<TypeIdMap<Box<dyn Reflect>>>);
+pub(crate) struct AttributesInformation(Arc<TypeIdMap<Box<dyn Reflect>>>);
 
 impl From<&CustomAttributes> for AttributesInformation {
     fn from(attributes: &CustomAttributes) -> Self {
@@ -163,281 +343,49 @@ impl AttributeInfoReflect for CustomAttributes {
         self.get_by_id(id)
     }
 }
-/// Enum representing different types of type information available for reflection.
-///
-/// This enum provides a unified interface for accessing type information from various
-/// sources in the Bevy reflection system, allowing for flexible handling of type
-/// metadata during schema generation.
-#[derive(Clone, Debug)]
-pub enum TypeInformation {
-    /// Contains a complete type registration with all associated metadata.
-    ///
-    /// This variant holds a full `TypeRegistration` which includes type info,
-    /// type data, and other registration details.
-    TypeRegistration(TypeRegistration),
 
-    /// Contains detailed type information about the structure of a type.
-    ///
-    /// This variant holds a `TypeInfo` which describes the internal structure
-    /// of a type (struct, enum, tuple, etc.) and its fields or variants.
-    TypeInfo(Box<TypeInfo>),
-
-    /// Contains information about a specific enum variant.
-    ///
-    /// This variant holds a `VariantInfo` which describes a single variant
-    /// of an enum, including its name, fields, and other metadata.
-    VariantInfo(Box<VariantInfo>),
-
-    /// Contains basic type information without detailed structure.
-    ///
-    /// This variant holds a `Type` which provides basic type metadata
-    /// like type path and ID, but without detailed structural information.
-    Type(Box<Type>),
-
-    /// Contains only the type identifier.
-    ///
-    /// This variant holds just a `TypeId` which uniquely identifies a type
-    /// but provides no additional metadata about its structure or properties.
-    TypeId(TypeId),
+pub(super) trait OptionalInfoReader {
+    fn try_get_optional(&self) -> Option<&GenericInfo>;
 }
 
-impl TypeInformation {
-    /// Checks for custom schema.
-    pub fn try_get_custom_schema(&self) -> Option<&super::ReflectJsonSchema> {
-        if let Self::TypeRegistration(reg) = self {
-            reg.data::<super::ReflectJsonSchema>()
-        } else {
-            None
-        }
-    }
-    /// Builds a `TypeReferenceId` from the type path.
-    pub fn try_get_type_reference_id(&self) -> Option<TypeReferenceId> {
-        if let Some(schema) = self.try_get_custom_schema() {
-            if schema.0.id.is_empty() {
-                None
-            } else {
-                Some(schema.0.id.trim().into())
-            }
-        } else if self.is_primitive_type() {
-            None
-        } else if let Some(optional) = self.try_get_optional_info() {
-            Some(optional.type_path().into())
-        } else if let Some(s) = self.try_get_type_info() {
-            if s.as_array().is_ok() || s.as_list().is_ok() || s.as_map().is_ok() {
-                None
-            } else {
-                self.try_get_type_path_table().map(|t| t.path().into())
-            }
-        } else {
-            self.try_get_type_path_table().map(|t| t.path().into())
-        }
-    }
-    /// Returns true if the stored type is a primitive one.
-    pub fn is_primitive_type(&self) -> bool {
-        self.try_get_primitive_type().is_some()
-    }
-    /// Returns the primitive type if the stored type is a primitive one.
-    pub fn try_get_primitive_type(&self) -> Option<SchemaType> {
-        SchemaType::try_get_primitive_type_from_type_id(self.type_id())
-    }
-    /// Converts the type information into a schema type information.
-    pub fn to_schema_type_info(self) -> SchemaTypeInfo {
-        let stored_fields = (&self).into();
-        SchemaTypeInfo {
-            ty_info: self,
-            field_data: None,
-            stored_fields,
-            reflect_type_data: None,
-        }
-    }
-    /// Converts the type information into a schema type information.
-    pub fn to_schema_type_info_with_metadata(
-        self,
-        metadata: &SchemaTypesMetadata,
-    ) -> SchemaTypeInfo {
-        let stored_fields = (&self).into();
-        let reflect_type_data = if let Self::TypeRegistration(reg) = &self {
-            Some(metadata.get_registered_reflect_types(reg))
-        } else {
-            None
-        };
-        SchemaTypeInfo {
-            ty_info: self,
-            field_data: None,
-            stored_fields,
-            reflect_type_data,
-        }
-    }
-    /// Returns the documentation of the type.
-    #[cfg(feature = "documentation")]
-    pub fn get_docs(&self) -> Option<Cow<'static, str>> {
-        let docs = match self {
-            TypeInformation::TypeRegistration(type_registration) => {
-                type_registration.type_info().docs()
-            }
-            TypeInformation::TypeInfo(type_info) => type_info.docs(),
-            TypeInformation::VariantInfo(variant_info) => variant_info.docs(),
-            _ => None,
-        };
-
-        docs.map(|docs| docs.trim().replace("\n", "").into())
-    }
-
-    /// Returns the documentation of the type.
-    #[cfg(not(feature = "documentation"))]
-    pub fn get_docs(&self) -> Option<&str> {
-        None
-    }
-
-    /// Returns the type information of the type.
-    pub fn try_get_type_info(&self) -> Option<&TypeInfo> {
-        match self {
-            TypeInformation::TypeInfo(type_info) => Some(&**type_info),
-            TypeInformation::TypeRegistration(reg) => Some(reg.type_info()),
-            _ => None,
-        }
-    }
-
-    /// Returns the type of the type.
-    pub fn try_get_type(&self) -> Option<&Type> {
-        match self {
-            TypeInformation::TypeInfo(type_info) => Some(type_info.ty()),
-            TypeInformation::TypeRegistration(reg) => Some(reg.type_info().ty()),
-            TypeInformation::Type(t) => Some(&**t),
-            _ => None,
-        }
-    }
-
-    /// Returns whether the type is forced as an array.
-    pub fn is_forced_as_array(&self) -> bool {
-        match self {
-            TypeInformation::TypeRegistration(type_registration) => type_registration
-                .data::<ReflectJsonSchemaForceAsArray>()
-                .is_some(),
-            _ => false,
-        }
-    }
-
-    /// Returns the type path table of the schema.
-    pub fn try_get_type_path_table(&self) -> Option<&TypePathTable> {
-        match self {
-            TypeInformation::Type(t) => Some(t.type_path_table()),
-            TypeInformation::TypeId(_) | TypeInformation::VariantInfo(_) => None,
-            TypeInformation::TypeInfo(type_info) => Some(type_info.type_path_table()),
-            TypeInformation::TypeRegistration(type_registration) => {
-                Some(type_registration.type_info().type_path_table())
-            }
-        }
-    }
-    /// Builds range information based on the type ID.
-    pub fn get_range(&self) -> MinMaxValues {
-        self.type_id().into()
-    }
-    /// Returns the type ID of the schema.
-    pub fn type_id(&self) -> TypeId {
-        if let Some(s) = self.try_get_optional_info() {
-            return s.type_id();
-        }
-        match self {
-            Self::TypeId(id) => *id,
-            Self::Type(t) => t.id(),
-            Self::TypeInfo(type_info) => {
-                if let TypeInfo::Opaque(o) = &**type_info {
-                    o.type_id()
-                } else {
-                    type_info.type_id()
-                }
-            }
-            TypeInformation::TypeRegistration(type_registration) => type_registration.type_id(),
-            TypeInformation::VariantInfo(variant_info) => match &**variant_info {
-                VariantInfo::Struct(struct_info) => struct_info.type_id(),
-                VariantInfo::Tuple(tuple_variant_info) => {
-                    if tuple_variant_info.field_len() == 1 {
-                        tuple_variant_info.field_at(0).expect("").type_id()
-                    } else {
-                        tuple_variant_info.type_id()
-                    }
-                }
-                VariantInfo::Unit(unit_variant_info) => unit_variant_info.type_id(),
-            },
-        }
-    }
-    /// Returns the optional type information of the schema.
-    pub fn try_get_optional_info(&self) -> Option<&GenericInfo> {
-        let Some(TypeInfo::Enum(enum_info)) = self.try_get_type_info() else {
-            return None;
-        };
-        Self::try_get_optional_from_info(enum_info)
-    }
-    /// Try to get the optional type information from the enum information.
-    pub fn try_get_optional_from_info(enum_info: &EnumInfo) -> Option<&GenericInfo> {
-        let generic = enum_info.generics().first()?;
-        if enum_info.variant_len() != 2
-            || !enum_info.contains_variant("Some")
-            || !enum_info.contains_variant("None")
+impl OptionalInfoReader for EnumInfo {
+    fn try_get_optional(&self) -> Option<&GenericInfo> {
+        let generic = self.generics().first()?;
+        if self.variant_len() != 2
+            || !self.contains_variant("Some")
+            || !self.contains_variant("None")
         {
             return None;
         }
-
         Some(generic)
     }
 }
-
-impl Default for TypeInformation {
-    fn default() -> Self {
-        Self::TypeId(TypeId::of::<()>())
-    }
-}
-
-impl From<&TypeInformation> for SchemaKind {
-    fn from(value: &TypeInformation) -> Self {
-        let type_info = value.try_get_type_info();
-        let schema_type: SchemaType = if let Some(type_info) = type_info {
-            match type_info {
-                TypeInfo::Struct(_) => return SchemaKind::Struct,
-                TypeInfo::TupleStruct(_) => return SchemaKind::TupleStruct,
-                TypeInfo::Tuple(_) => return SchemaKind::Tuple,
-                TypeInfo::List(_) => return SchemaKind::List,
-                TypeInfo::Array(_) => return SchemaKind::Array,
-                TypeInfo::Map(_) => return SchemaKind::Map,
-                TypeInfo::Set(_) => return SchemaKind::Set,
-                TypeInfo::Opaque(o) => o.type_id().into(),
-                TypeInfo::Enum(enum_info) => {
-                    return if TypeInformation::try_get_optional_from_info(enum_info).is_some() {
-                        SchemaKind::Optional
-                    } else {
-                        SchemaKind::Enum
-                    };
-                }
-            }
-        } else {
-            if let TypeInformation::VariantInfo(_) = &value {
-                return SchemaKind::Value;
-            }
-            value.type_id().into()
+impl OptionalInfoReader for TypeInfo {
+    fn try_get_optional(&self) -> Option<&GenericInfo> {
+        let TypeInfo::Enum(enum_info) = self else {
+            return None;
         };
-        match schema_type {
-            SchemaType::Object => SchemaKind::Struct,
-            SchemaType::Array => SchemaKind::Array,
-            _ => SchemaKind::Value,
-        }
+        enum_info.try_get_optional()
+    }
+}
+impl OptionalInfoReader for TypeRegistration {
+    fn try_get_optional(&self) -> Option<&GenericInfo> {
+        self.type_info().try_get_optional()
     }
 }
 
-impl TryFrom<&TypeInformation> for TypeReferenceId {
-    type Error = ();
-
-    fn try_from(value: &TypeInformation) -> Result<Self, Self::Error> {
-        match value.try_get_type_path_table() {
-            Some(table) => Ok(table.into()),
-            None => Err(()),
-        }
+fn try_get_regex_for_type(id: TypeId) -> Option<Cow<'static, str>> {
+    let data = BASE_TYPES_INFO.get(&id)?;
+    match data.schema_type {
+        SchemaType::Number => Some("\\d+(?:\\.'\\d+)?".into()),
+        SchemaType::Integer => Some("^(0|-*[1-9]+[0-9]*)$".into()),
+        _ => None,
     }
 }
 
 /// Represents the data of a field in a schema.
 #[derive(Clone)]
-pub struct SchemaFieldData {
+pub(crate) struct SchemaFieldData {
     /// Name of the field.
     pub name: Option<Cow<'static, str>>,
     /// Index of the field. Can be provided for named fields when the data is obtained from containing struct definition.
@@ -446,6 +394,8 @@ pub struct SchemaFieldData {
     pub description: Option<Cow<'static, str>>,
     /// Attributes of the field.
     pub attributes: AttributesInformation,
+    /// Type of the field.
+    pub type_id: TypeId,
 }
 
 impl Debug for SchemaFieldData {
@@ -466,9 +416,11 @@ impl SchemaFieldData {
             None => Cow::Owned(format!("[{}]", self.index.unwrap_or(0))),
         }
     }
-    /// Returns the index of the field.
-    pub fn index(&self) -> usize {
-        self.index.unwrap_or(0)
+    /// Returns the description of the field.
+    pub fn to_description(&self) -> Option<Cow<'static, str>> {
+        self.description
+            .as_ref()
+            .map(|description| Cow::Owned(description.trim().replace("\n", "")))
     }
 }
 
@@ -585,6 +537,8 @@ pub enum ReferenceLocation {
     Components,
     /// used by schemas
     Url,
+    /// Used by JSON Schema
+    Urn,
 }
 
 impl Display for ReferenceLocation {
@@ -593,6 +547,7 @@ impl Display for ReferenceLocation {
             ReferenceLocation::Definitions => write!(f, "#/$defs/"),
             ReferenceLocation::Components => write!(f, "#/components/"),
             ReferenceLocation::Url => write!(f, "https://"),
+            ReferenceLocation::Urn => write!(f, "urn:"),
         }
     }
 }
@@ -605,6 +560,19 @@ pub enum SchemaNumber {
     Int(i128),
     /// Floating-point value.
     Float(f64),
+}
+impl From<SchemaNumber> for serde_json::Value {
+    fn from(val: SchemaNumber) -> Self {
+        match val {
+            SchemaNumber::Int(value) => {
+                let int: i64 = value.try_into().ok().unwrap_or_default();
+                serde_json::Value::Number(int.into())
+            }
+            SchemaNumber::Float(value) => {
+                serde_json::Value::Number(serde_json::Number::from_f64(value).unwrap())
+            }
+        }
+    }
 }
 
 impl From<f32> for SchemaNumber {
@@ -731,10 +699,40 @@ pub struct MinMaxValues {
     pub max: Option<BoundValue>,
 }
 
+impl From<&JsonSchemaBevyType> for MinMaxValues {
+    fn from(value: &JsonSchemaBevyType) -> Self {
+        let min = match (&value.exclusive_minimum, &value.minimum) {
+            (Some(ex), None) => Some(BoundValue::Exclusive(*ex)),
+            (_, Some(inclusive)) => Some(BoundValue::Inclusive(*inclusive)),
+            _ => None,
+        };
+        let max = match (&value.exclusive_maximum, &value.maximum) {
+            (Some(ex), None) => Some(BoundValue::Exclusive(*ex)),
+            (_, Some(inclusive)) => Some(BoundValue::Inclusive(*inclusive)),
+            _ => None,
+        };
+        MinMaxValues { min, max }
+    }
+}
+
 impl MinMaxValues {
+    /// Combines two [`MinMaxValues`] instances
+    pub fn with(self, other: MinMaxValues) -> MinMaxValues {
+        let min = match (self.min, other.min) {
+            (_, Some(other_min)) => Some(other_min),
+            (min, _) => min,
+        };
+        let max = match (self.max, other.max) {
+            (_, Some(other_max)) => Some(other_max),
+            (max, _) => max,
+        };
+        MinMaxValues { min, max }
+    }
+
     /// Checks if a given value falls within the defined range constraints.
     /// Returns true if the value is within bounds, false otherwise.
-    pub fn in_range(&self, value: SchemaNumber) -> bool {
+    pub fn in_range(&self, value: impl Into<SchemaNumber>) -> bool {
+        let value = value.into();
         if let Some(min) = self.min {
             if let Some(min_value) = min.get_inclusive() {
                 if value < min_value {
@@ -801,43 +799,25 @@ impl MinMaxValues {
 
 impl From<TypeId> for MinMaxValues {
     fn from(value: TypeId) -> Self {
-        let mut min: Option<BoundValue> = None;
-        let mut max: Option<BoundValue> = None;
-        if value.eq(&TypeId::of::<u8>()) {
-            min = Some(BoundValue::Inclusive(0.into()));
-            max = Some(BoundValue::Inclusive(u8::MAX.into()));
-        } else if value.eq(&TypeId::of::<u16>()) {
-            min = Some(BoundValue::Inclusive(0.into()));
-            max = Some(BoundValue::Inclusive(u16::MAX.into()));
-        } else if value.eq(&TypeId::of::<u32>()) {
-            min = Some(BoundValue::Inclusive(0.into()));
-            max = Some(BoundValue::Inclusive(u32::MAX.into()));
-        } else if value.eq(&TypeId::of::<u64>())
-            || value.eq(&TypeId::of::<usize>())
-            || value.eq(&TypeId::of::<u128>())
-        {
-            min = Some(BoundValue::Inclusive(0.into()));
-        } else if value.eq(&TypeId::of::<i8>()) {
-            min = Some(BoundValue::Inclusive(i8::MIN.into()));
-            max = Some(BoundValue::Inclusive(i8::MAX.into()));
-        } else if value.eq(&TypeId::of::<i16>()) {
-            min = Some(BoundValue::Inclusive(i16::MIN.into()));
-            max = Some(BoundValue::Inclusive(i16::MAX.into()));
-        } else if value.eq(&TypeId::of::<i32>()) {
-            min = Some(BoundValue::Inclusive(i32::MIN.into()));
-            max = Some(BoundValue::Inclusive(i32::MAX.into()));
+        if let Some(info) = BASE_TYPES_INFO.get(&value) {
+            MinMaxValues {
+                min: info.min,
+                max: info.max,
+            }
+        } else {
+            MinMaxValues::default()
         }
-        MinMaxValues { min, max }
     }
 }
+
 /// Enum representing the internal schema type information for different Rust types.
 /// This enum categorizes how different types should be represented in JSON schema.
-#[derive(Clone, Debug, Default)]
-pub enum InternalSchemaType {
+#[derive(Clone, Debug)]
+pub(crate) enum InternalSchemaType {
     /// Represents array-like types (Vec, arrays, lists, sets).
     Array {
         /// Element type information for the array.
-        element_ty: TypeInformation,
+        element_ty: TypeId,
         /// Minimum number of elements allowed in the array.
         min_size: Option<u64>,
         /// Maximum number of elements allowed in the array.
@@ -845,615 +825,236 @@ pub enum InternalSchemaType {
     },
     /// Holds all variants of an enum type.
     EnumHolder(Vec<VariantInfo>),
-    /// Represents a single enum variant.
-    EnumVariant(VariantInfo),
     /// Holds named fields for struct, tuple, and tuple struct types.
     FieldsHolder(FieldsInformation),
     /// Represents an Optional type (e.g., `Option<T>`).
     Optional {
         /// Generic information about the wrapped type `T` in `Option<T>`.
         generic: GenericInfo,
-        /// Schema type information for the wrapped type `T` in `Option<T>`.
-        schema_type_info: Box<SchemaTypeInfo>,
     },
     /// Represents a Map type (e.g., `HashMap`<K, V>).
     Map {
         /// Information about the key type contained in the map.
-        key: TypeInformation,
+        key: TypeId,
         /// Information about the value type contained in the map.
-        value: TypeInformation,
+        value: TypeId,
     },
-    /// Variant for regular types.
-    RegularType(Type),
+    /// Represents a Primitive type (e.g., `i32`, `f64`, `bool`, etc.).
+    PrimitiveType {
+        /// The unique identifier for the primitive type.
+        type_id: TypeId,
+        /// The schema type of the primitive.
+        primitive: SchemaType,
+        /// Optional field data for the primitive type.
+        field_data: Option<SchemaFieldData>,
+    },
     /// Variant for regular primitive types and other simple types.
     Regular(TypeId),
-    /// Represents a type with no information.
-    #[default]
-    NoInfo,
 }
-impl From<&TypeInformation> for InternalSchemaType {
-    fn from(value: &TypeInformation) -> Self {
-        if let Some(type_info) = value.try_get_type_info() {
-            match type_info {
-                TypeInfo::Struct(struct_info) => {
-                    let fields = get_fields_information(struct_info.iter());
-                    let fields_type = if value.is_forced_as_array() {
-                        FieldType::ForceUnnamed
-                    } else {
-                        FieldType::Named
+
+impl Default for InternalSchemaType {
+    fn default() -> Self {
+        InternalSchemaType::Regular(TypeId::of::<()>())
+    }
+}
+
+impl InternalSchemaType {
+    fn is_optional(&self) -> bool {
+        matches!(self, InternalSchemaType::Optional { .. })
+    }
+    pub(super) fn from_type_registration(
+        value: &TypeRegistration,
+        registry: &TypeRegistry,
+    ) -> InternalSchemaType {
+        if let Some(primitive) =
+            SchemaType::try_get_primitive_type_from_type_id(value.type_info().type_id())
+        {
+            return InternalSchemaType::PrimitiveType {
+                type_id: value.type_info().type_id(),
+                primitive,
+                field_data: None,
+            };
+        }
+        match value.type_info() {
+            TypeInfo::Struct(struct_info) => {
+                let fields = get_fields_information(struct_info.iter());
+                let fields_type = if value.data::<ReflectJsonSchemaForceAsArray>().is_some() {
+                    FieldType::ForceUnnamed
+                } else {
+                    FieldType::Named
+                };
+                InternalSchemaType::FieldsHolder(FieldsInformation {
+                    fields,
+                    fields_type,
+                })
+            }
+            TypeInfo::TupleStruct(info) => {
+                if info.field_len() == 1 {
+                    let field = info.field_at(0).expect("HOW?");
+                    let id = field.type_id();
+                    let reg = registry.get(id).expect("HOW?");
+                    let mut internal = InternalSchemaType::from_type_registration(reg, registry);
+                    if let InternalSchemaType::PrimitiveType {
+                        type_id: _,
+                        primitive: _,
+                        field_data,
+                    } = &mut internal
+                    {
+                        *field_data = Some(field.into());
                     };
-                    InternalSchemaType::FieldsHolder(FieldsInformation {
-                        fields,
-                        fields_type,
-                    })
-                }
-                TypeInfo::TupleStruct(info) => {
+                    internal
+                } else {
                     InternalSchemaType::FieldsHolder(FieldsInformation {
                         fields: get_fields_information(info.iter()),
                         fields_type: FieldType::Unnamed,
                     })
                 }
-                TypeInfo::Tuple(info) => InternalSchemaType::FieldsHolder(FieldsInformation {
-                    fields: get_fields_information(info.iter()),
-                    fields_type: FieldType::Unnamed,
-                }),
-                TypeInfo::Enum(enum_info) => {
-                    match TypeInformation::try_get_optional_from_info(enum_info) {
-                        Some(e) => InternalSchemaType::Optional {
-                            generic: e.clone(),
-                            schema_type_info: Box::new(SchemaTypeInfo::default()),
-                        },
-                        None => InternalSchemaType::EnumHolder(enum_info.iter().cloned().collect()),
-                    }
-                }
+            }
+            TypeInfo::Tuple(info) => InternalSchemaType::FieldsHolder(FieldsInformation {
+                fields: get_fields_information(info.iter()),
+                fields_type: FieldType::Unnamed,
+            }),
+            TypeInfo::Enum(enum_info) => match enum_info.try_get_optional() {
+                Some(e) => InternalSchemaType::Optional { generic: e.clone() },
+                None => InternalSchemaType::EnumHolder(enum_info.iter().cloned().collect()),
+            },
 
-                TypeInfo::List(list_info) => InternalSchemaType::Array {
-                    element_ty: (list_info.item_info(), &list_info.item_ty()).into(),
-                    min_size: None,
-                    max_size: None,
-                },
-                TypeInfo::Set(set_info) => InternalSchemaType::Array {
-                    element_ty: (None, &set_info.value_ty()).into(),
-                    min_size: None,
-                    max_size: None,
-                },
-                TypeInfo::Array(array_info) => InternalSchemaType::Array {
-                    element_ty: (array_info.item_info(), &array_info.item_ty()).into(),
-                    min_size: Some(array_info.capacity() as u64),
-                    max_size: Some(array_info.capacity() as u64),
-                },
-                TypeInfo::Map(map_info) => InternalSchemaType::Map {
-                    key: (map_info.key_info(), &map_info.key_ty()).into(),
-                    value: (map_info.value_info(), &map_info.value_ty()).into(),
-                },
-                TypeInfo::Opaque(t) => InternalSchemaType::RegularType(*t.ty()),
-            }
-        } else {
-            match value {
-                TypeInformation::VariantInfo(info) => {
-                    InternalSchemaType::EnumVariant((**info).clone())
-                }
-                TypeInformation::Type(ty) => InternalSchemaType::RegularType(*ty.as_ref()),
-                TypeInformation::TypeId(type_id) => InternalSchemaType::Regular(*type_id),
-                _ => InternalSchemaType::NoInfo,
-            }
+            TypeInfo::List(list_info) => InternalSchemaType::Array {
+                element_ty: list_info.item_ty().id(),
+                min_size: None,
+                max_size: None,
+            },
+            TypeInfo::Set(set_info) => InternalSchemaType::Array {
+                element_ty: set_info.value_ty().id(),
+                min_size: None,
+                max_size: None,
+            },
+            TypeInfo::Array(array_info) => InternalSchemaType::Array {
+                element_ty: array_info.item_ty().id(),
+                min_size: Some(array_info.capacity() as u64),
+                max_size: Some(array_info.capacity() as u64),
+            },
+            TypeInfo::Map(map_info) => InternalSchemaType::Map {
+                key: map_info.key_ty().id(),
+                value: map_info.value_ty().id(),
+            },
+            TypeInfo::Opaque(t) => InternalSchemaType::Regular(t.ty().id()),
         }
     }
-}
-impl From<&SchemaTypeInfo> for InternalSchemaType {
-    fn from(value: &SchemaTypeInfo) -> Self {
-        if let Some(s) = &value.stored_fields {
-            InternalSchemaType::FieldsHolder(s.clone())
-        } else {
-            (&value.ty_info).into()
+    /// Returns the dependencies of the type.
+    pub(super) fn get_dependencies(&self, registry: &TypeRegistry) -> HashSet<TypeId> {
+        let mut dependencies = HashSet::new();
+        match &self {
+            InternalSchemaType::Array {
+                element_ty,
+                min_size: _,
+                max_size: _,
+            } => {
+                if let Some(reg) = registry.get(*element_ty) {
+                    let subschema = InternalSchemaType::from_type_registration(reg, registry);
+                    if !subschema.is_optional() {
+                        dependencies.insert(reg.type_id());
+                    }
+                    dependencies.extend(subschema.get_dependencies(registry));
+                }
+            }
+            InternalSchemaType::EnumHolder(variant_infos) => {
+                for variant_info in variant_infos {
+                    let subschema = match variant_info {
+                        VariantInfo::Struct(struct_variant_info) => {
+                            InternalSchemaType::FieldsHolder(FieldsInformation {
+                                fields: get_fields_information(struct_variant_info.iter()),
+                                fields_type: FieldType::Named,
+                            })
+                        }
+                        VariantInfo::Tuple(tuple_variant_info) => {
+                            InternalSchemaType::FieldsHolder(FieldsInformation {
+                                fields: get_fields_information(tuple_variant_info.iter()),
+                                fields_type: FieldType::Unnamed,
+                            })
+                        }
+                        VariantInfo::Unit(_) => continue,
+                    };
+                    dependencies.extend(subschema.get_dependencies(registry));
+                }
+            }
+            InternalSchemaType::FieldsHolder(fields_information) => {
+                for field in fields_information.iter() {
+                    if SchemaType::try_get_primitive_type_from_type_id(field.type_id).is_some() {
+                        continue;
+                    }
+                    let Some(reg) = registry.get(field.type_id) else {
+                        continue;
+                    };
+                    let subschema = InternalSchemaType::from_type_registration(reg, registry);
+                    if !subschema.is_optional() {
+                        dependencies.insert(field.type_id);
+                    }
+                    dependencies.extend(subschema.get_dependencies(registry));
+                }
+            }
+            InternalSchemaType::Optional { generic } => {
+                if let Some(reg) = registry.get(generic.type_id()) {
+                    if SchemaType::try_get_primitive_type_from_type_id(reg.type_id()).is_none() {
+                        let subschema = InternalSchemaType::from_type_registration(reg, registry);
+                        if !subschema.is_optional() {
+                            dependencies.insert(reg.type_id());
+                        }
+                        dependencies.extend(subschema.get_dependencies(registry));
+                    }
+                }
+            }
+            InternalSchemaType::Map { key, value } => {
+                if let Some(reg) = registry.get(key.type_id()) {
+                    if SchemaType::try_get_primitive_type_from_type_id(reg.type_id()).is_none() {
+                        let subschema = InternalSchemaType::from_type_registration(reg, registry);
+                        if !subschema.is_optional() {
+                            dependencies.insert(reg.type_id());
+                        }
+                        dependencies.extend(subschema.get_dependencies(registry));
+                    }
+                }
+                if let Some(reg) = registry.get(value.type_id()) {
+                    if SchemaType::try_get_primitive_type_from_type_id(reg.type_id()).is_none() {
+                        let subschema = InternalSchemaType::from_type_registration(reg, registry);
+                        if !subschema.is_optional() {
+                            dependencies.insert(reg.type_id());
+                        }
+                        dependencies.extend(subschema.get_dependencies(registry));
+                    }
+                }
+            }
+            InternalSchemaType::Regular(t) => {
+                _ = dependencies.insert(*t);
+            }
+            InternalSchemaType::PrimitiveType { .. } => {}
         }
+        dependencies
     }
 }
 
 impl From<&InternalSchemaType> for Option<SchemaTypeVariant> {
     fn from(value: &InternalSchemaType) -> Self {
         match value {
+            InternalSchemaType::PrimitiveType {
+                type_id: _,
+                primitive,
+                ..
+            } => Some(SchemaTypeVariant::Single(*primitive)),
             InternalSchemaType::Array { .. } => Some(SchemaTypeVariant::Single(SchemaType::Array)),
-            InternalSchemaType::EnumVariant(variant) => match variant {
-                VariantInfo::Tuple(t) => {
-                    if t.field_len() == 1 {
-                        let s: TypeInformation = t.field_at(0).expect("Should not happened").into();
-                        let schema: InternalSchemaType = (&s).into();
-
-                        (&schema).into()
-                    } else {
-                        Some(SchemaTypeVariant::Single(SchemaType::Array))
-                    }
-                }
-                VariantInfo::Struct(_) => Some(SchemaTypeVariant::Single(SchemaType::Object)),
-                VariantInfo::Unit(_) => Some(SchemaTypeVariant::Single(SchemaType::String)),
-            },
             InternalSchemaType::FieldsHolder(fields) => match fields.fields_type {
                 FieldType::Named => Some(SchemaTypeVariant::Single(SchemaType::Object)),
                 FieldType::Unnamed if fields.fields.len() == 1 => {
-                    let schema: InternalSchemaType = (&fields.fields[0].type_info).into();
-                    (&schema).into()
+                    let schema: SchemaType = fields.fields[0].type_id.into();
+                    schema.into()
                 }
                 _ => Some(SchemaTypeVariant::Single(SchemaType::Array)),
             },
-            InternalSchemaType::Optional {
-                generic,
-                schema_type_info: _,
-            } => {
-                let schema: InternalSchemaType =
-                    (&TypeInformation::Type(Box::new(*generic.ty()))).into();
-                let s: Option<SchemaTypeVariant> = (&schema).into();
-                Some(
-                    s.unwrap_or(SchemaTypeVariant::Single(SchemaType::Object))
-                        .with(SchemaType::Null),
-                )
-            }
             InternalSchemaType::Map { .. } => Some(SchemaTypeVariant::Single(SchemaType::Object)),
             InternalSchemaType::Regular(type_id) => {
                 Some(SchemaTypeVariant::Single((*type_id).into()))
             }
-            InternalSchemaType::RegularType(ty) => Some(SchemaTypeVariant::Single(ty.id().into())),
-            InternalSchemaType::NoInfo | InternalSchemaType::EnumHolder(_) => None,
-        }
-    }
-}
-
-impl From<&SchemaTypeInfo> for Option<SchemaTypeVariant> {
-    fn from(value: &SchemaTypeInfo) -> Self {
-        let schema: InternalSchemaType = (&value.ty_info).into();
-        (&schema).into()
-    }
-}
-
-impl From<&FieldInformation> for SchemaTypeInfo {
-    fn from(value: &FieldInformation) -> Self {
-        Self {
-            ty_info: value.type_info.clone(),
-            field_data: Some(value.field.clone()),
-            stored_fields: (&value.type_info).into(),
-            reflect_type_data: None,
-        }
-    }
-}
-
-/// Contains comprehensive information about a type's schema representation.
-/// This struct aggregates all the necessary information to generate a JSON schema
-/// from Rust type information obtained through reflection.
-#[derive(Clone, Debug, Default)]
-pub struct SchemaDefinition {
-    /// The type reference ID of the schema.
-    pub id: Option<TypeReferenceId>,
-    /// The JSON schema type of the schema.
-    pub schema: JsonSchemaBevyType,
-    /// The properties of the schema.
-    pub definitions: HashMap<TypeReferenceId, SchemaTypeInfo>,
-}
-
-impl From<SchemaDefinition> for JsonSchemaBevyType {
-    fn from(value: SchemaDefinition) -> Self {
-        Self {
-            definitions: value
-                .definitions
-                .iter()
-                .map(|(id, schema)| (id.clone(), schema.to_definition().schema.into()))
-                .collect(),
-            ..value.schema
-        }
-    }
-}
-
-/// Contains comprehensive information about a type's schema representation.
-/// This struct aggregates all the necessary information to generate a JSON schema
-/// from Rust type information obtained through reflection.
-#[derive(Clone, Debug, Default)]
-pub struct SchemaTypeInfo {
-    /// Information about the type of the schema.
-    pub ty_info: TypeInformation,
-    /// Field information for the type.
-    pub field_data: Option<SchemaFieldData>,
-    /// Fields stored in the type.
-    pub stored_fields: Option<FieldsInformation>,
-    /// Bevy specific field, names of the types that type reflects. Mapping of the names to the data types is provided by [`SchemaTypesMetadata`].
-    pub reflect_type_data: Option<Vec<Cow<'static, str>>>,
-}
-
-impl SchemaTypeInfo {
-    /// Get the documentation for the schema type.
-    /// If the field has a description, it is returned.
-    /// Otherwise, the documentation from the type information is returned.
-    pub fn get_docs(&self) -> Option<Cow<'static, str>> {
-        let docs = self
-            .field_data
-            .as_ref()
-            .and_then(|field_data| field_data.description.clone())
-            .or(self.ty_info.get_docs());
-        docs.map(|docs| docs.trim().replace("\n", "").to_string().into())
-    }
-
-    /// Get the range of the schema type.
-    /// Starting point is the type's minimum and maximum values, can be further restricted by field data.
-    pub fn get_range(&self) -> MinMaxValues {
-        let mut min_max = self.ty_info.get_range();
-        if let Some(field_data) = &self.field_data {
-            let range = field_data
-                .attributes
-                .get_range_by_id(self.ty_info.type_id());
-            if let Some(field_range) = range {
-                if field_range.min.is_some() {
-                    min_max.min = field_range.min;
-                }
-                if field_range.max.is_some() {
-                    min_max.max = field_range.max;
-                }
-            }
-        }
-        min_max
-    }
-    /// Converts the schema type information into a JSON schema reference.
-    pub fn to_ref_schema(&self) -> JsonSchemaBevyType {
-        let range = self.get_range();
-        let description = self.get_docs();
-        let internal_type: InternalSchemaType = (self).into();
-        let (ref_type, schema_type) = (
-            self.ty_info
-                .try_get_type_reference_id()
-                .map(TypeReferencePath::definition),
-            self.into(),
-        );
-
-        let mut schema = JsonSchemaBevyType {
-            description,
-            minimum: range.min.get_inclusive(),
-            maximum: range.max.get_inclusive(),
-            exclusive_minimum: range.min.get_exclusive(),
-            exclusive_maximum: range.max.get_exclusive(),
-            kind: None,
-            ref_type,
-            schema_type,
-            ..default()
-        };
-        match internal_type {
-            InternalSchemaType::Array {
-                element_ty,
-                min_size,
-                max_size,
-            } => {
-                schema.ref_type = None;
-                let items_schema = SchemaTypeInfo {
-                    ty_info: element_ty.clone(),
-                    field_data: None,
-                    stored_fields: None,
-                    reflect_type_data: None,
-                };
-                schema.items = Some(items_schema.to_ref_schema().into());
-                schema.min_items = min_size;
-                schema.max_items = max_size;
-            }
-            InternalSchemaType::EnumHolder(_)
-            | InternalSchemaType::EnumVariant(_)
-            | InternalSchemaType::FieldsHolder(_)
-            | InternalSchemaType::Map { key: _, value: _ } => {
-                schema.ref_type = None;
-            }
-            _ => {}
-        }
-
-        schema
-    }
-
-    /// Converts the schema type information into a JSON schema definition.
-    pub fn to_definition(&self) -> SchemaDefinition {
-        let mut id: Option<TypeReferenceId> = self.ty_info.try_get_type_reference_id();
-        let mut definitions: HashMap<TypeReferenceId, SchemaTypeInfo> = HashMap::new();
-        if let Some(custom_schema) = &self.ty_info.try_get_custom_schema() {
-            return SchemaDefinition {
-                id,
-                schema: custom_schema.0.clone(),
-                definitions,
-            };
-        }
-        let range = self.ty_info.get_range();
-
-        let (type_path, short_path, crate_name, module_path) =
-            if let Some(type_path_table) = self.ty_info.try_get_type_path_table() {
-                (
-                    type_path_table.path().into(),
-                    type_path_table.short_path().into(),
-                    type_path_table.crate_name().map(Into::into),
-                    type_path_table.module_path().map(Into::into),
-                )
-            } else {
-                (Cow::default(), Cow::default(), None, None)
-            };
-        let schema_id = id
-            .as_ref()
-            .map(|id| Cow::Owned(format!("urn:bevy:{id}")))
-            .unwrap_or_default();
-        let mut schema = JsonSchemaBevyType {
-            id: schema_id,
-            description: self.ty_info.get_docs(),
-            type_path,
-            short_path,
-            crate_name,
-            module_path,
-            kind: Some((&self.ty_info).into()),
-            minimum: range.min.get_inclusive(),
-            maximum: range.max.get_inclusive(),
-            exclusive_minimum: range.min.get_exclusive(),
-            exclusive_maximum: range.max.get_exclusive(),
-            schema_type: self.into(),
-            reflect_type_data: self.reflect_type_data.clone().unwrap_or_default(),
-            ..default()
-        };
-        let internal_type: InternalSchemaType = (self).into();
-        match internal_type {
-            InternalSchemaType::Map { key, value } => {
-                let key: SchemaTypeInfo = SchemaTypeInfo {
-                    ty_info: key.clone(),
-                    field_data: None,
-                    stored_fields: None,
-                    reflect_type_data: None,
-                };
-                let value: SchemaTypeInfo = SchemaTypeInfo {
-                    ty_info: value.clone(),
-                    field_data: None,
-                    stored_fields: None,
-                    reflect_type_data: None,
-                };
-                if !key.ty_info.is_primitive_type() {
-                    let SchemaDefinition {
-                        id,
-                        schema: _,
-                        definitions: field_definitions,
-                    } = key.to_definition();
-                    if let Some(id) = id {
-                        definitions.insert(id, key.clone());
-                        definitions.extend(field_definitions);
-                    }
-                }
-                if !value.ty_info.is_primitive_type() {
-                    let SchemaDefinition {
-                        id,
-                        schema: _,
-                        definitions: field_definitions,
-                    } = value.to_definition();
-                    if let Some(id) = id {
-                        definitions.insert(id, value.clone());
-                        definitions.extend(field_definitions);
-                    }
-                }
-                schema.additional_properties = Some(key.to_ref_schema().into());
-                schema.value_type = Some(value.to_ref_schema().into());
-                schema.key_type = Some(key.to_ref_schema().into());
-            }
-            InternalSchemaType::Regular(_)
-            | InternalSchemaType::RegularType(_)
-            | InternalSchemaType::NoInfo => {}
-            InternalSchemaType::EnumHolder(variants) => {
-                let schema_fields: Vec<(Cow<'static, str>, SchemaDefinition)> = variants
-                    .iter()
-                    .map(|variant| {
-                        (
-                            variant.name().into(),
-                            SchemaTypeInfo::from(variant).to_definition(),
-                        )
-                    })
-                    .collect();
-                schema.one_of = schema_fields
-                    .iter()
-                    .map(|(_, definition)| definition.schema.clone().into())
-                    .collect();
-                definitions.extend(schema_fields.iter().flat_map(|s| s.1.definitions.clone()));
-            }
-            InternalSchemaType::EnumVariant(variant_info) => {
-                schema.kind = Some(SchemaKind::Value);
-                schema.schema_type = Some(SchemaTypeVariant::Single(SchemaType::Object));
-                let ty_info: TypeInformation = (&variant_info).into();
-                let field_data: Option<SchemaFieldData> = Some((&variant_info).into());
-                id = None;
-                match &variant_info {
-                    VariantInfo::Struct(struct_variant_info) => {
-                        let fields = get_fields_information(struct_variant_info.iter());
-
-                        let schema_field = SchemaTypeInfo {
-                            ty_info,
-                            field_data,
-                            stored_fields: Some(FieldsInformation {
-                                fields,
-                                fields_type: FieldType::Named,
-                            }),
-                            reflect_type_data: None,
-                        };
-                        let definition = schema_field.to_definition();
-
-                        schema.properties =
-                            [(variant_info.name().into(), definition.schema.into())].into();
-                        schema.required = vec![variant_info.name().into()];
-                        definitions.extend(definition.definitions);
-                    }
-                    VariantInfo::Tuple(tuple_variant_info) => {
-                        let stored_fields = get_fields_information(tuple_variant_info.iter());
-                        let schema_field = SchemaTypeInfo {
-                            ty_info,
-                            field_data: None,
-                            stored_fields: Some(FieldsInformation {
-                                fields: stored_fields,
-
-                                fields_type: FieldType::Unnamed,
-                            }),
-                            reflect_type_data: None,
-                        };
-                        let definition = schema_field.to_definition();
-
-                        schema.properties =
-                            [(variant_info.name().into(), definition.schema.into())].into();
-                        definitions.extend(definition.definitions);
-                        schema.required = vec![variant_info.name().into()];
-                    }
-                    VariantInfo::Unit(unit_variant_info) => {
-                        let schema_field = SchemaTypeInfo {
-                            ty_info,
-                            field_data,
-                            stored_fields: None,
-                            reflect_type_data: None,
-                        };
-                        return SchemaDefinition {
-                            id: None,
-                            schema: JsonSchemaBevyType {
-                                const_value: Some(unit_variant_info.name().to_string().into()),
-                                schema_type: Some(SchemaTypeVariant::Single(SchemaType::String)),
-                                description: schema_field.get_docs(),
-                                kind: Some(SchemaKind::Value),
-                                ..Default::default()
-                            },
-                            definitions: HashMap::new(),
-                        };
-                    }
-                }
-            }
-            InternalSchemaType::FieldsHolder(fields) => match fields.fields_type {
-                FieldType::Named => {
-                    schema.additional_properties = Some(JsonSchemaVariant::BoolValue(false));
-                    schema.schema_type = Some(SchemaTypeVariant::Single(SchemaType::Object));
-                    let schema_fields: Vec<(Cow<'static, str>, SchemaTypeInfo)> = fields
-                        .fields
-                        .iter()
-                        .map(|field| (field.field.to_name(), SchemaTypeInfo::from(field)))
-                        .collect();
-                    schema.properties = schema_fields
-                        .iter()
-                        .map(|(name, schema)| (name.clone(), schema.to_ref_schema().into()))
-                        .collect();
-                    for (_, field_schema) in schema_fields {
-                        if field_schema.ty_info.is_primitive_type() {
-                            continue;
-                        }
-                        let SchemaDefinition {
-                            id,
-                            schema: _,
-                            definitions: field_definitions,
-                        } = field_schema.to_definition();
-                        definitions.extend(field_definitions);
-                        let Some(id) = id else { continue };
-                        if !definitions.contains_key(&id) {
-                            definitions.insert(id, field_schema);
-                        }
-                    }
-                    schema.required = fields
-                        .fields
-                        .iter()
-                        .map(|field| field.field.to_name())
-                        .collect();
-                }
-                FieldType::Unnamed if fields.fields.len() == 1 => {
-                    let field_schema = SchemaTypeInfo::from(&fields.fields[0]);
-                    let SchemaDefinition {
-                        id,
-                        schema: new_schema_type,
-                        definitions: field_definitions,
-                    } = field_schema.to_definition();
-                    definitions.extend(field_definitions);
-                    if let Some(id) = id {
-                        definitions.insert(id, field_schema);
-                    }
-                    schema = new_schema_type;
-                    schema.schema_type = self.into();
-                    schema.description = self.get_docs();
-                }
-                s => {
-                    let schema_fields: Vec<SchemaTypeInfo> =
-                        fields.fields.iter().map(SchemaTypeInfo::from).collect();
-                    schema.prefix_items = schema_fields
-                        .iter()
-                        .map(|field| {
-                            let field_schema = if s == FieldType::ForceUnnamed
-                                && field
-                                    .field_data
-                                    .as_ref()
-                                    .is_some_and(|f| f.description.is_none())
-                            {
-                                if let Some(field_data) = field.field_data.as_ref() {
-                                    let description = field_data.name.clone();
-                                    SchemaTypeInfo {
-                                        field_data: Some(SchemaFieldData {
-                                            description,
-                                            ..field_data.clone()
-                                        }),
-                                        ..field.clone()
-                                    }
-                                    .to_ref_schema()
-                                } else {
-                                    field.to_ref_schema()
-                                }
-                            } else {
-                                field.to_ref_schema()
-                            };
-
-                            field_schema.into()
-                        })
-                        .collect();
-                    for field_schema in schema_fields {
-                        if field_schema.ty_info.is_primitive_type() {
-                            continue;
-                        }
-                        let SchemaDefinition {
-                            id,
-                            schema: _,
-                            definitions: field_definitions,
-                        } = field_schema.to_definition();
-                        definitions.extend(field_definitions);
-                        let Some(id) = id else { continue };
-                        if !definitions.contains_key(&id) {
-                            definitions.insert(id, field_schema);
-                        }
-                    }
-                    schema.min_items = Some(fields.fields.len() as u64);
-                    schema.max_items = Some(fields.fields.len() as u64);
-                }
-            },
-            InternalSchemaType::Array {
-                element_ty,
-                min_size,
-                max_size,
-            } => {
-                id = None;
-                let items_schema = SchemaTypeInfo {
-                    ty_info: element_ty.clone(),
-                    field_data: None,
-                    stored_fields: None,
-                    reflect_type_data: None,
-                };
-                schema.items = Some(items_schema.to_ref_schema().into());
-                schema.min_items = min_size;
-                schema.max_items = max_size;
-
-                if !items_schema.ty_info.is_primitive_type() {
-                    let SchemaDefinition {
-                        id,
-                        schema: _,
-                        definitions: field_definitions,
-                    } = items_schema.to_definition();
-                    definitions.extend(field_definitions);
-                    if let Some(id) = id {
-                        definitions.insert(id, items_schema);
-                    }
-                }
-            }
-            InternalSchemaType::Optional {
-                generic,
-                ref schema_type_info,
-            } => {
-                let schema_optional = SchemaTypeInfo {
-                    ty_info: TypeInformation::Type(Box::new(*generic.ty())),
-                    ..(**schema_type_info).clone()
-                };
-                return schema_optional.to_definition();
-            }
-        }
-        SchemaDefinition {
-            id,
-            schema,
-            definitions,
+            InternalSchemaType::EnumHolder(_) | InternalSchemaType::Optional { generic: _ } => None,
         }
     }
 }
@@ -1543,35 +1144,6 @@ pub trait AttributeInfoReflect {
     }
 }
 
-impl<'a, T> From<&'a T> for SchemaTypeInfo
-where
-    T: 'static,
-    TypeInformation: From<&'a T>,
-    SchemaFieldData: From<&'a T>,
-{
-    fn from(value: &'a T) -> Self {
-        let ty_info: TypeInformation = value.into();
-        let field_data: SchemaFieldData = value.into();
-        let stored_fields = (&ty_info).into();
-        SchemaTypeInfo {
-            ty_info,
-            field_data: Some(field_data),
-            stored_fields,
-            reflect_type_data: None,
-        }
-    }
-}
-
-/// Builds a JSON schema variant from a value.
-pub fn build_schema<'a, T>(value: &'a T) -> JsonSchemaVariant
-where
-    T: 'static,
-    SchemaTypeInfo: From<&'a T>,
-{
-    let schema: SchemaTypeInfo = value.into();
-    schema.to_definition().schema.into()
-}
-
 impl From<&UnnamedField> for SchemaFieldData {
     fn from(value: &UnnamedField) -> Self {
         let attributes: AttributesInformation = value.custom_attributes().into();
@@ -1584,6 +1156,7 @@ impl From<&UnnamedField> for SchemaFieldData {
             name: None,
             index: Some(value.index()),
             description,
+            type_id: value.type_id(),
         }
     }
 }
@@ -1599,34 +1172,11 @@ impl From<&NamedField> for SchemaFieldData {
             index: None,
             description,
             attributes,
+            type_id: value.type_id(),
         }
     }
 }
 
-impl From<(Option<&'static TypeInfo>, &Type)> for TypeInformation {
-    fn from(value: (Option<&'static TypeInfo>, &Type)) -> Self {
-        match value.0 {
-            Some(info) => TypeInformation::TypeInfo(Box::new(info.clone())),
-            None => (*value.1).into(),
-        }
-    }
-}
-impl From<&NamedField> for TypeInformation {
-    fn from(value: &NamedField) -> Self {
-        (value.type_info(), value.ty()).into()
-    }
-}
-impl From<&UnnamedField> for TypeInformation {
-    fn from(value: &UnnamedField) -> Self {
-        (value.type_info(), value.ty()).into()
-    }
-}
-
-impl From<&VariantInfo> for TypeInformation {
-    fn from(value: &VariantInfo) -> Self {
-        TypeInformation::VariantInfo(Box::new(value.clone()))
-    }
-}
 impl From<&VariantInfo> for SchemaFieldData {
     fn from(value: &VariantInfo) -> Self {
         #[cfg(feature = "documentation")]
@@ -1638,78 +1188,474 @@ impl From<&VariantInfo> for SchemaFieldData {
             index: None,
             description,
             attributes: value.custom_attributes().into(),
+            type_id: value.type_id(),
         }
     }
 }
 
-impl From<&TypeInfo> for TypeInformation {
-    fn from(value: &TypeInfo) -> Self {
-        TypeInformation::TypeInfo(Box::new(value.clone()))
-    }
-}
-
-impl From<&TypeRegistration> for TypeInformation {
-    fn from(value: &TypeRegistration) -> Self {
-        TypeInformation::TypeRegistration(value.clone())
-    }
-}
-
-impl From<Type> for TypeInformation {
-    fn from(value: Type) -> Self {
-        TypeInformation::Type(Box::new(value))
-    }
-}
-impl From<&TypeId> for TypeInformation {
-    fn from(value: &TypeId) -> Self {
-        TypeInformation::TypeId(*value)
-    }
-}
-impl From<TypeId> for TypeInformation {
-    fn from(value: TypeId) -> Self {
-        TypeInformation::TypeId(value)
-    }
-}
-
-fn get_fields_information<'a, 'b, T>(iterator: Iter<'a, T>) -> Vec<FieldInformation>
+fn get_fields_information<'a, 'b, T>(iterator: Iter<'a, T>) -> Vec<SchemaFieldData>
 where
     SchemaFieldData: From<&'a T>,
-    TypeInformation: From<&'a T>,
 {
     iterator
         .enumerate()
-        .map(|(index, field)| FieldInformation {
-            field: SchemaFieldData {
-                index: Some(index),
-                ..field.into()
-            },
-            type_info: field.into(),
+        .map(|(index, field)| SchemaFieldData {
+            index: Some(index),
+            ..field.into()
         })
         .collect()
 }
 
+pub(crate) fn variant_to_definition(
+    variant: &VariantInfo,
+    registry: &TypeRegistry,
+) -> JsonSchemaBevyType {
+    let field_data: SchemaFieldData = variant.into();
+    let mut schema = JsonSchemaBevyType {
+        description: field_data.to_description(),
+        kind: Some(SchemaKind::Value),
+        schema_type: Some(SchemaTypeVariant::Single(SchemaType::Object)),
+        additional_properties: Some(JsonSchemaVariant::BoolValue(false)),
+        ..Default::default()
+    };
+    let fields_info = match variant {
+        VariantInfo::Unit(unit_variant_info) => {
+            schema.const_value = Some(unit_variant_info.name().to_string().into());
+            schema.schema_type = Some(SchemaTypeVariant::Single(SchemaType::String));
+            schema.additional_properties = None;
+            return schema;
+        }
+        VariantInfo::Struct(struct_variant_info) => FieldsInformation {
+            fields: get_fields_information(struct_variant_info.iter()),
+            fields_type: FieldType::Named,
+        },
+        VariantInfo::Tuple(tuple_variant_info) => FieldsInformation {
+            fields: get_fields_information(tuple_variant_info.iter()),
+            fields_type: FieldType::Unnamed,
+        },
+    };
+    let mut subschema = JsonSchemaBevyType::default();
+    registry.update_schema_with_fields_info(&mut subschema, &fields_info);
+    schema.properties = [(variant.name().into(), subschema.into())].into();
+    schema
+}
+
+pub(crate) trait TypeDefinitionBuilder {
+    /// Builds a JSON schema for a given type ID.
+    fn build_schema_for_type_id(
+        &self,
+        type_id: TypeId,
+        metadata: &SchemaTypesMetadata,
+    ) -> Option<(Option<TypeReferenceId>, JsonSchemaBevyType)>;
+    /// Returns a set of type IDs that are dependencies of the given type ID.
+    fn get_type_dependencies(&self, type_id: TypeId) -> HashSet<TypeId>;
+    /// Builds a JSON schema for a given type ID with definitions.
+    fn build_schema_for_type_id_with_definitions(
+        &self,
+        type_id: TypeId,
+        metadata: &SchemaTypesMetadata,
+    ) -> Option<JsonSchemaBevyType>;
+
+    /// Builds a schema reference for a given type ID.
+    fn build_schema_reference_for_type_id(
+        &self,
+        type_id: TypeId,
+        field_data: Option<&SchemaFieldData>,
+    ) -> Option<JsonSchemaBevyType>;
+
+    /// Updates a JSON schema with fields information.
+    fn update_schema_with_fields_info(
+        &self,
+        schema: &mut JsonSchemaBevyType,
+        info: &FieldsInformation,
+    ) {
+        match &info.fields_type {
+            FieldType::Named => {
+                schema.additional_properties = Some(JsonSchemaVariant::BoolValue(false));
+                schema.schema_type = Some(SchemaTypeVariant::Single(SchemaType::Object));
+                let schema_fields: Vec<(Cow<'static, str>, JsonSchemaBevyType)> = info
+                    .fields
+                    .iter()
+                    .map(|field| {
+                        (
+                            field.to_name(),
+                            self.build_schema_reference_for_type_id(field.type_id, Some(field))
+                                .unwrap_or_default(),
+                        )
+                    })
+                    .collect();
+                schema.properties = schema_fields
+                    .into_iter()
+                    .map(|(name, schema)| (name.clone(), schema.into()))
+                    .collect();
+                schema.required = info
+                    .fields
+                    .iter()
+                    .map(|field| field.name.clone().unwrap_or_default())
+                    .collect();
+            }
+            FieldType::Unnamed if info.fields.len() == 1 => {
+                let new_schema = self
+                    .build_schema_reference_for_type_id(
+                        info.fields[0].type_id,
+                        Some(&info.fields[0]),
+                    )
+                    .unwrap_or_default();
+                *schema = new_schema;
+                schema.kind = Some(SchemaKind::Tuple);
+            }
+            FieldType::Unnamed | FieldType::ForceUnnamed => {
+                schema.min_items = Some(info.fields.len() as u64);
+                schema.max_items = Some(info.fields.len() as u64);
+                schema.prefix_items = info
+                    .fields
+                    .iter()
+                    .map(|field| {
+                        let mut schema = self
+                            .build_schema_reference_for_type_id(field.type_id, Some(field))
+                            .unwrap_or_default();
+                        if schema.description.is_none() && field.name.is_some() {
+                            schema.description = field.name.clone();
+                        }
+                        JsonSchemaVariant::Schema(Box::new(schema))
+                    })
+                    .collect();
+            }
+        }
+    }
+}
+
+impl TypeDefinitionBuilder for TypeRegistry {
+    fn build_schema_for_type_id(
+        &self,
+        type_id: TypeId,
+        metadata: &SchemaTypesMetadata,
+    ) -> Option<(Option<TypeReferenceId>, JsonSchemaBevyType)> {
+        let type_reg = self.get(type_id)?;
+        let internal = InternalSchemaType::from_type_registration(type_reg, self);
+
+        let mut id: Option<TypeReferenceId> = Some(type_reg.type_info().type_path().into());
+        if let Some(custom_schema) = &type_reg.data::<super::ReflectJsonSchema>() {
+            return Some((id, custom_schema.0.clone()));
+        }
+        let range: MinMaxValues = type_id.into();
+        let type_path_table = type_reg.type_info().type_path_table();
+        let (type_path, short_path, crate_name, module_path) = (
+            type_path_table.path().into(),
+            type_path_table.short_path().into(),
+            type_path_table.crate_name().map(Into::into),
+            type_path_table.module_path().map(Into::into),
+        );
+        #[cfg(feature = "documentation")]
+        let description = type_reg
+            .type_info()
+            .docs()
+            .map(|docs| docs.trim().replace("\n", "").into());
+        #[cfg(not(feature = "documentation"))]
+        let description = None;
+
+        let mut schema = JsonSchemaBevyType {
+            description,
+            type_path,
+            short_path,
+            crate_name,
+            module_path,
+            kind: Some(SchemaKind::from_type_reg(type_reg)),
+            minimum: range.min.get_inclusive(),
+            maximum: range.max.get_inclusive(),
+            exclusive_minimum: range.min.get_exclusive(),
+            exclusive_maximum: range.max.get_exclusive(),
+            schema_type: (&internal).into(),
+            reflect_type_data: metadata.get_registered_reflect_types(type_reg),
+            ..default()
+        };
+        schema.schema_type = (&internal).into();
+        match internal {
+            InternalSchemaType::PrimitiveType {
+                type_id: _,
+                primitive: _,
+                field_data,
+            } => {
+                return self
+                    .build_schema_reference_for_type_id(type_id, field_data.as_ref())
+                    .map(|schema| (None, schema));
+            }
+            InternalSchemaType::Map { key, value } => {
+                id = None;
+                schema.value_type = self
+                    .build_schema_reference_for_type_id(value, None)
+                    .map(Box::new);
+                if let Some(p) = try_get_regex_for_type(key) {
+                    schema.pattern_properties =
+                        [(p, schema.value_type.clone().unwrap_or_default())].into();
+                    schema.additional_properties = Some(JsonSchemaVariant::BoolValue(false));
+                } else {
+                    schema.additional_properties =
+                        schema.value_type.clone().map(JsonSchemaVariant::Schema);
+                }
+                schema.key_type = self
+                    .build_schema_reference_for_type_id(key, None)
+                    .map(Box::new);
+            }
+            InternalSchemaType::Regular(_) => {}
+            InternalSchemaType::EnumHolder(variants) => {
+                schema.one_of = variants
+                    .iter()
+                    .map(|variant| {
+                        let schema = variant_to_definition(variant, self);
+                        Box::new(schema)
+                    })
+                    .collect();
+            }
+            InternalSchemaType::FieldsHolder(fields) => {
+                self.update_schema_with_fields_info(&mut schema, &fields);
+            }
+            InternalSchemaType::Array {
+                element_ty,
+                min_size,
+                max_size,
+            } => {
+                id = None;
+                let items_schema = self
+                    .build_schema_reference_for_type_id(element_ty, None)
+                    .unwrap_or_default();
+                schema.items = Some(items_schema.into());
+                schema.min_items = min_size;
+                schema.max_items = max_size;
+            }
+            InternalSchemaType::Optional { generic } => {
+                id = None;
+                let optional_schema = self
+                    .build_schema_reference_for_type_id(generic.type_id(), None)
+                    .unwrap_or_default();
+
+                schema.ref_type = None;
+                schema.schema_type = None;
+                schema.one_of = vec![
+                    Box::new(JsonSchemaBevyType {
+                        schema_type: Some(SchemaTypeVariant::Single(SchemaType::Null)),
+                        ..Default::default()
+                    }),
+                    Box::new(optional_schema),
+                ];
+            }
+        }
+        Some((id, schema))
+    }
+
+    fn get_type_dependencies(&self, type_id: TypeId) -> HashSet<TypeId> {
+        let Some(type_reg) = self.get(type_id) else {
+            return HashSet::new();
+        };
+        let internal_schema_type = InternalSchemaType::from_type_registration(type_reg, self);
+
+        internal_schema_type.get_dependencies(self)
+    }
+
+    fn build_schema_for_type_id_with_definitions(
+        &self,
+        type_id: TypeId,
+        metadata: &SchemaTypesMetadata,
+    ) -> Option<JsonSchemaBevyType> {
+        let (_, mut schema) = self.build_schema_for_type_id(type_id, metadata)?;
+        let dependencies = self.get_type_dependencies(type_id);
+        schema.schema = Some(super::json_schema::SchemaMarker.into());
+        schema.definitions = dependencies
+            .into_iter()
+            .flat_map(|id| {
+                let result = self.build_schema_for_type_id(id, metadata);
+                let Some((Some(schema_id), schema)) = result else {
+                    return None;
+                };
+                Some((schema_id, Box::new(schema)))
+            })
+            .collect();
+        Some(schema)
+    }
+
+    fn build_schema_reference_for_type_id(
+        &self,
+        type_id: TypeId,
+        field_data: Option<&SchemaFieldData>,
+    ) -> Option<JsonSchemaBevyType> {
+        let type_reg = self.get(type_id)?;
+        let description = field_data.and_then(SchemaFieldData::to_description);
+
+        let ref_type = Some(TypeReferencePath::definition(
+            type_reg.type_info().type_path(),
+        ));
+
+        let mut schema = JsonSchemaBevyType {
+            description,
+            kind: Some(SchemaKind::from_type_reg(type_reg)),
+            ref_type,
+            type_path: type_reg.type_info().type_path().into(),
+            schema_type: None,
+            ..default()
+        };
+        let internal = InternalSchemaType::from_type_registration(type_reg, self);
+        schema.schema_type = (&internal).into();
+        match internal {
+            InternalSchemaType::PrimitiveType {
+                type_id,
+                primitive: _,
+                field_data: p_field_data,
+            } => {
+                let mut range: MinMaxValues = type_id.into();
+                if let Some(data) = BASE_TYPES_INFO.get(&type_id) {
+                    schema.not = data.not.map(|s| {
+                        Box::new(JsonSchemaBevyType {
+                            const_value: Some(s.into()),
+                            ..default()
+                        })
+                    });
+                    schema.kind = Some(data.schema_kind);
+                }
+                if let Some(field_range) = field_data
+                    .as_ref()
+                    .and_then(|d| d.attributes.get_range_by_id(type_id))
+                {
+                    range = range.with(field_range);
+                }
+                if let Some(field_range) = p_field_data
+                    .as_ref()
+                    .and_then(|d| d.attributes.get_range_by_id(type_id))
+                {
+                    range = range.with(field_range);
+                }
+
+                schema.minimum = range.min.get_inclusive();
+                schema.maximum = range.max.get_inclusive();
+                schema.exclusive_minimum = range.min.get_exclusive();
+                schema.exclusive_maximum = range.max.get_exclusive();
+                schema.ref_type = None;
+                return Some(schema);
+            }
+            InternalSchemaType::Array {
+                element_ty,
+                min_size,
+                max_size,
+            } => {
+                schema.kind = Some(SchemaKind::Array);
+                schema.ref_type = None;
+                schema.schema_type = Some(SchemaTypeVariant::Single(SchemaType::Array));
+                let items_schema = self.build_schema_reference_for_type_id(element_ty, None);
+                schema.items = items_schema.map(|i| JsonSchemaVariant::Schema(Box::new(i)));
+                schema.min_items = min_size;
+                schema.max_items = max_size;
+            }
+            InternalSchemaType::Map { key, value } => {
+                schema.ref_type = None;
+                schema.schema_type = Some(SchemaTypeVariant::Single(SchemaType::Object));
+                schema.kind = Some(SchemaKind::Map);
+                schema.key_type = self
+                    .build_schema_reference_for_type_id(key, None)
+                    .map(Box::new);
+                schema.value_type = self
+                    .build_schema_reference_for_type_id(value, None)
+                    .map(Box::new);
+
+                if let Some(p) = try_get_regex_for_type(key) {
+                    schema.pattern_properties =
+                        [(p, schema.value_type.clone().unwrap_or_default())].into();
+                    schema.additional_properties = Some(JsonSchemaVariant::BoolValue(false));
+                } else {
+                    schema.additional_properties =
+                        schema.value_type.clone().map(JsonSchemaVariant::Schema);
+                }
+            }
+            InternalSchemaType::Optional { generic } => {
+                let schema_optional = self
+                    .build_schema_reference_for_type_id(generic.ty().id(), None)
+                    .unwrap_or_default();
+                schema.ref_type = None;
+                schema.one_of = vec![
+                    Box::new(JsonSchemaBevyType {
+                        schema_type: SchemaType::Null.into(),
+                        ..Default::default()
+                    }),
+                    schema_optional.into(),
+                ];
+            }
+            _ => {}
+        }
+        if schema.ref_type.is_some() {
+            schema.schema_type = None;
+        }
+
+        Some(schema)
+    }
+}
+
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
+    use bevy_ecs::{
+        component::Component,
+        entity::{Entity, EntityHashMap},
+        name::Name,
+        reflect::AppTypeRegistry,
+    };
     use bevy_platform::collections::HashMap;
     use bevy_reflect::GetTypeRegistration;
 
+    use crate::schemas::json_schema::TypeRegistrySchemaReader;
+
     use super::*;
 
-    #[test]
-    fn integer_test() {
-        let type_info = TypeInformation::from(&TypeId::of::<u16>()).to_schema_type_info();
-        let schema_type: Option<SchemaTypeVariant> = (&type_info).into();
-        assert_eq!(
-            type_info.get_range().min,
-            Some(BoundValue::Inclusive(0.into()))
+    /// Validate a JSON schema against a set of valid and invalid instances.
+    pub fn validate<T: GetTypeRegistration + Serialize + Default>(
+        schema: JsonSchemaBevyType,
+        valid_instances: &[T],
+        valid_values: &[serde_json::Value],
+        invalid_values: &[serde_json::Value],
+    ) {
+        let schema_value = serde_json::to_value(&schema).unwrap();
+        let schema_validator = jsonschema::options()
+            .with_draft(jsonschema::Draft::Draft202012)
+            .build(&schema_value)
+            .unwrap_or_else(|errors| {
+                panic!(
+                    "Failed to build schema validator because of errors: {:?}, schema: {}",
+                    errors,
+                    serde_json::to_string_pretty(&schema).unwrap_or_default()
+                )
+            });
+        let default_value = serde_json::to_value(T::default()).unwrap();
+        assert!(
+            schema_validator.validate(&default_value).is_ok(),
+            "Default value is invalid: {}, schema: {}",
+            default_value,
+            serde_json::to_string_pretty(&schema_value).unwrap_or_default()
         );
-        assert_eq!(
-            type_info.get_range().max,
-            Some(BoundValue::Inclusive(u16::MAX.into()))
+        let mut errors = Vec::new();
+        let valid_instances: Vec<serde_json::Value> = valid_instances
+            .iter()
+            .flat_map(|s| serde_json::to_value(s).ok())
+            .collect();
+        for value in valid_instances.iter() {
+            if let Err(error) = schema_validator.validate(value) {
+                errors.push((error, value.clone()));
+            }
+        }
+        for value in valid_values {
+            if let Err(error) = schema_validator.validate(value) {
+                errors.push((error, value.clone()));
+            }
+        }
+        assert!(
+            errors.is_empty(),
+            "Failed to validate valid instances, errors: {:?}, schema: {}",
+            errors,
+            serde_json::to_string_pretty(&schema_value).unwrap_or_default()
         );
-        assert_eq!(
-            schema_type,
-            Some(SchemaTypeVariant::Single(SchemaType::Integer))
-        );
+        for value in invalid_values {
+            assert!(
+                schema_validator.validate(value).is_err(),
+                "Validation should fail for invalid value: {}, schema: {}",
+                value,
+                serde_json::to_string_pretty(&schema_value).unwrap_or_default()
+            );
+        }
     }
 
     #[test]
@@ -1718,23 +1664,29 @@ mod tests {
         pub struct StructTest {
             /// Test documentation
             #[reflect(@10..=13_i32)]
-            no_value: i32,
+            value: i32,
         }
-        let struct_info = StructTest::get_type_registration()
-            .type_info()
-            .as_struct()
-            .expect("Should not fail");
-        let field_info = struct_info.field("no_value").expect("Should not fail");
-        let type_info = SchemaTypeInfo::from(field_info);
-        let schema_type: Option<SchemaTypeVariant> = (&type_info).into();
-        let range = type_info.get_range();
+        let atr = AppTypeRegistry::default();
+        {
+            let mut register = atr.write();
+            register.register::<StructTest>();
+        }
+        let type_registry = atr.read();
+        let (_, schema) = type_registry
+            .build_schema_for_type_id(TypeId::of::<StructTest>(), &Default::default())
+            .expect("");
+        let JsonSchemaVariant::Schema(field_schema) = &schema.properties["value"] else {
+            panic!("Should be a schema");
+        };
+        let range: MinMaxValues = (&**field_schema).into();
         assert_eq!(range.min, Some(BoundValue::Inclusive(10.into())));
         assert_eq!(range.max, Some(BoundValue::Inclusive(13.into())));
         assert_eq!(
-            schema_type,
+            field_schema.schema_type,
             Some(SchemaTypeVariant::Single(SchemaType::Integer))
         );
-        assert_eq!(type_info.get_docs(), Some("Test documentation".into()));
+        #[cfg(feature = "documentation")]
+        assert_eq!(field_schema.description, Some("Test documentation".into()));
     }
 
     #[test]
@@ -1743,28 +1695,33 @@ mod tests {
         pub struct StructTest {
             /// Test documentation
             #[reflect(@..13_usize)]
-            no_value: usize,
+            some_value: usize,
         }
-        let struct_info = StructTest::get_type_registration()
-            .type_info()
-            .as_struct()
-            .expect("Should not fail");
-        let field_info = struct_info.field("no_value").expect("Should not fail");
-        let type_info = SchemaTypeInfo::from(field_info);
-        let schema_type: Option<SchemaTypeVariant> = (&type_info).into();
-        let range = type_info.get_range();
-        assert!(!range.in_range((-1).into()));
-        assert!(range.in_range(0.into()));
-        assert!(range.in_range(12.into()));
-        assert!(!range.in_range(13.into()));
-        assert_eq!(range.min, Some(BoundValue::Inclusive(0.into())));
-        assert_eq!(range.max, Some(BoundValue::Exclusive(13.into())));
-        assert_eq!(
-            schema_type,
-            Some(SchemaTypeVariant::Single(SchemaType::Integer))
+        let atr = AppTypeRegistry::default();
+        {
+            let mut register = atr.write();
+            register.register::<StructTest>();
+        }
+        let type_registry = atr.read();
+        let (_, schema) = type_registry
+            .build_schema_for_type_id(TypeId::of::<StructTest>(), &Default::default())
+            .expect("");
+        validate::<StructTest>(
+            schema,
+            &[StructTest { some_value: 5 }],
+            &[
+                serde_json::json!({"some_value": 5}),
+                serde_json::json!({"some_value": 1}),
+            ],
+            &[
+                serde_json::json!({"some_value": 1111111}),
+                serde_json::json!({"some_value": -5555}),
+                serde_json::json!({"some_value": 1,"ss": 2}),
+            ],
         );
-        assert_eq!(type_info.get_docs(), Some("Test documentation".into()));
     }
+
+    #[cfg(feature = "bevy_math")]
     #[test]
     fn other_ss_test() {
         #[derive(Reflect, Default, Deserialize, Serialize)]
@@ -1772,20 +1729,47 @@ mod tests {
             /// Test doc
             a: u16,
         }
-        let atr = bevy_ecs::reflect::AppTypeRegistry::default();
+        let atr = AppTypeRegistry::default();
         {
             let mut register = atr.write();
             register.register::<bevy_math::Vec3>();
+            register.register::<Foo>();
             register.register_type_data::<bevy_math::Vec3, ReflectJsonSchemaForceAsArray>();
         }
         let type_registry = atr.read();
-        let declaration = TypeInformation::from(
-            type_registry
-                .get(TypeId::of::<bevy_math::Vec3>())
-                .expect(""),
-        )
-        .to_schema_type_info();
-        let _: JsonSchemaBevyType = declaration.to_definition().into();
+        let (_, schema) = type_registry
+            .build_schema_for_type_id(TypeId::of::<Foo>(), &Default::default())
+            .expect("");
+        validate::<Foo>(
+            schema,
+            &[Foo { a: 5 }, Foo { a: 1111 }],
+            &[serde_json::json!({"a": 5}), serde_json::json!({"a": 1})],
+            &[
+                serde_json::json!({"a": 1111111}),
+                serde_json::json!({"ab": -5555}),
+                serde_json::json!({"a": 5555,"b": 5555}),
+            ],
+        );
+        let (_, schema) = type_registry
+            .build_schema_for_type_id(TypeId::of::<bevy_math::Vec3>(), &Default::default())
+            .expect("");
+
+        validate::<bevy_math::Vec3>(
+            schema,
+            &[
+                bevy_math::Vec3::new(5.0, 4.0, 4.0),
+                bevy_math::Vec3::new(25.0, 4.0, 4.0),
+            ],
+            &[
+                serde_json::json!([0, 4, 5]),
+                serde_json::json!([5.1, 5.2, 5.3]),
+            ],
+            &[
+                serde_json::json!([5.1, 5.2]),
+                serde_json::json!([5.1, 5.2, 4, 4]),
+                serde_json::json!({"x": 5.1, "y": 5.2, "z": 5.3}),
+            ],
+        );
     }
 
     #[test]
@@ -1796,22 +1780,33 @@ mod tests {
             #[reflect(@..13_usize)]
             pub usize,
         );
-
-        let struct_info = TupleTest::get_type_registration()
-            .type_info()
-            .as_tuple_struct()
-            .expect("Should not fail");
-        let field_info = struct_info.iter().next().expect("Should not fail");
-        let type_info = SchemaTypeInfo::from(field_info);
-        let schema_type: Option<SchemaTypeVariant> = (&type_info).into();
-        let range = type_info.get_range();
+        let atr = AppTypeRegistry::default();
+        {
+            let mut register = atr.write();
+            register.register::<TupleTest>();
+        }
+        let types = atr.read();
+        let schema = types
+            .build_schema_for_type_id_with_definitions(
+                TypeId::of::<TupleTest>(),
+                &Default::default(),
+            )
+            .expect("");
+        let range: MinMaxValues = (&schema).into();
         assert_eq!(range.min, Some(BoundValue::Inclusive(0.into())));
         assert_eq!(range.max, Some(BoundValue::Exclusive(13.into())));
         assert_eq!(
-            schema_type,
+            schema.schema_type,
             Some(SchemaTypeVariant::Single(SchemaType::Integer))
         );
-        assert_eq!(type_info.get_docs(), Some("Test documentation".into()));
+        #[cfg(feature = "documentation")]
+        assert_eq!(schema.description, Some("Test documentation".into()));
+        validate::<TupleTest>(
+            schema,
+            &[TupleTest(10), TupleTest(11), TupleTest(0)],
+            &[serde_json::json!(5), serde_json::json!(1)],
+            &[serde_json::json!(55), serde_json::json!(-5555)],
+        );
     }
 
     #[test]
@@ -1828,17 +1823,96 @@ mod tests {
             Variant3(isize, usize),
             Variant4(usize),
         }
+        let atr = AppTypeRegistry::default();
+        {
+            let mut register = atr.write();
+            register.register::<EnumTest>();
+        }
+        let types = atr.read();
+        let schema = types
+            .build_schema_for_type_id_with_definitions(
+                TypeId::of::<EnumTest>(),
+                &Default::default(),
+            )
+            .expect("");
+        validate::<EnumTest>(
+            schema,
+            &[
+                EnumTest::Variant1,
+                EnumTest::Variant2 {
+                    field1: "test".into(),
+                    field2: 42,
+                },
+                EnumTest::Variant3(1, 2),
+                EnumTest::Variant4(3),
+            ],
+            &[],
+            &[],
+        );
+    }
+
+    #[test]
+    fn optional_tests() {
+        #[derive(Reflect, Default, Deserialize, Serialize)]
+        pub struct ArrayComponent {
+            pub array: [u8; 3],
+        }
+        let atr = AppTypeRegistry::default();
+        {
+            let mut register = atr.write();
+            register.register::<ArrayComponent>();
+            register.register::<Option<ArrayComponent>>();
+        }
+        let type_registry = atr.read();
+        let schema = type_registry
+            .export_type_json_schema::<Option<ArrayComponent>>(&Default::default())
+            .expect("Failed to export type JSON schema");
+        validate::<Option<ArrayComponent>>(
+            schema,
+            &[None, Some(ArrayComponent { array: [5, 1, 9] })],
+            &[
+                serde_json::json!({"array": [1, 2, 3]}),
+                serde_json::Value::Null,
+            ],
+            &[serde_json::json!({"array": [1999, 2, 3]})],
+        );
     }
 
     #[test]
     fn reflect_struct_with_array() {
         #[derive(Reflect, Default, Deserialize, Serialize)]
         pub struct ArrayComponent {
-            pub array: [i32; 3],
+            pub array: [u8; 3],
         }
-        let type_info =
-            TypeInformation::from(&ArrayComponent::get_type_registration()).to_schema_type_info();
-        let _: JsonSchemaBevyType = type_info.to_definition().into();
+        let atr = AppTypeRegistry::default();
+        {
+            let mut register = atr.write();
+            register.register::<ArrayComponent>();
+        }
+        let types = atr.read();
+        let schema = types
+            .build_schema_for_type_id_with_definitions(
+                TypeId::of::<ArrayComponent>(),
+                &Default::default(),
+            )
+            .expect("");
+        validate::<ArrayComponent>(
+            schema,
+            &[
+                ArrayComponent::default(),
+                ArrayComponent { array: [1, 2, 3] },
+                ArrayComponent { array: [4, 5, 6] },
+                ArrayComponent { array: [7, 8, 9] },
+            ],
+            &[],
+            &[
+                serde_json::json!({"array": [0,5]}),
+                serde_json::json!({"array": [0,5,-1]}),
+                serde_json::json!({"aa": [0,5,5]}),
+                serde_json::json!({"array": [0,5,5,5]}),
+                serde_json::json!({"array": [0.1,5.1,5]}),
+            ],
+        );
     }
 
     #[test]
@@ -1858,19 +1932,64 @@ mod tests {
             pub list: Vec<BaseStruct>,
             pub optional: Option<BaseStruct>,
         }
-        let type_info = TypeInformation::from(&ArrayComponent::get_type_registration())
-            .to_schema_type_info()
-            .to_definition();
-        let type_info_second =
-            TypeInformation::from(&ArrayComponentWithMoreVariants::get_type_registration())
-                .to_schema_type_info()
-                .to_definition();
-        assert_eq!(
-            type_info.definitions.len(),
-            type_info_second.definitions.len()
+
+        let atr = AppTypeRegistry::default();
+        {
+            let mut register = atr.write();
+            register.register::<ArrayComponent>();
+            register.register::<ArrayComponentWithMoreVariants>();
+        }
+        let types = atr.read();
+        let schema = types
+            .build_schema_for_type_id_with_definitions(
+                TypeId::of::<ArrayComponent>(),
+                &Default::default(),
+            )
+            .expect("");
+        let schema_second = types
+            .build_schema_for_type_id_with_definitions(
+                TypeId::of::<ArrayComponentWithMoreVariants>(),
+                &Default::default(),
+            )
+            .expect("");
+        assert_eq!(schema.definitions.len(), schema_second.definitions.len());
+        validate::<ArrayComponentWithMoreVariants>(schema_second, &[], &[], &[]);
+    }
+
+    #[test]
+    fn reflect_entity_hashmap() {
+        #[derive(Reflect, Default, Deserialize, Serialize)]
+        struct S {
+            map: EntityHashMap<String>,
+        }
+        let atr = AppTypeRegistry::default();
+        {
+            let mut register = atr.write();
+            register.register::<S>();
+        }
+        let types = atr.read();
+        let schema = types
+            .build_schema_for_type_id_with_definitions(TypeId::of::<S>(), &Default::default())
+            .expect("");
+        validate::<S>(
+            schema,
+            &[S {
+                map: [
+                    (Entity::from_raw(5), "Sd".to_string()),
+                    (Entity::from_raw(15), "Sas".to_string()),
+                    (Entity::from_raw(55), "Sa".to_string()),
+                ]
+                .into(),
+            }],
+            &[
+                serde_json::json!({"map": {"5": "dd"}}),
+                serde_json::json!({"map": {"5": "dasdas"}}),
+            ],
+            &[
+                serde_json::json!({"map": {"5.5": 10}}),
+                serde_json::json!({"map": {"s": 10}}),
+            ],
         );
-        // let schema: JsonSchemaBevyType = type_info_second.into();
-        // eprintln!("{}", serde_json::to_string_pretty(&schema).expect(""));
     }
 
     #[test]
@@ -1879,13 +1998,32 @@ mod tests {
         pub struct HashMapStruct {
             pub map: HashMap<i32, Option<i32>>,
         }
-        assert!(
-            serde_json::from_str::<HashMapStruct>("{\"map\": {\"0\": 1, \"1\": 41, \"2\": null}}")
-                .is_ok()
+        let atr = AppTypeRegistry::default();
+        {
+            let mut register = atr.write();
+            register.register::<HashMapStruct>();
+        }
+        let types = atr.read();
+        let schema = types
+            .build_schema_for_type_id_with_definitions(
+                TypeId::of::<HashMapStruct>(),
+                &Default::default(),
+            )
+            .expect("");
+        validate::<HashMapStruct>(
+            schema,
+            &[HashMapStruct {
+                map: [(5, Some(10)), (15, Some(20)), (-25, Some(30))].into(),
+            }],
+            &[
+                serde_json::json!({"map": {"-5": 10}}),
+                serde_json::json!({"map": {"5": None::<i32>}}),
+            ],
+            &[
+                serde_json::json!({"map": {"5.5": 10}}),
+                serde_json::json!({"map": {"s": 10}}),
+            ],
         );
-        let type_info =
-            TypeInformation::from(&HashMapStruct::get_type_registration()).to_schema_type_info();
-        let _: JsonSchemaBevyType = type_info.to_definition().into();
     }
 
     #[test]
@@ -1911,13 +2049,244 @@ mod tests {
             pub second: SecondStruct,
             pub third: ThirdStruct,
         }
-        let type_info =
-            TypeInformation::from(&NestedStruct::get_type_registration()).to_schema_type_info();
-        let _s: JsonSchemaBevyType = type_info.to_definition().into();
-        // eprintln!("{}", serde_json::to_string_pretty(&s).expect("msg"));
-        // eprintln!(
-        //     "{}",
-        //     serde_json::to_string_pretty(&NestedStruct::default()).expect("msg")
-        // );
+
+        let atr = AppTypeRegistry::default();
+        {
+            let mut register = atr.write();
+            register.register::<NestedStruct>();
+        }
+        let types = atr.read();
+        let schema = types
+            .build_schema_for_type_id_with_definitions(
+                TypeId::of::<NestedStruct>(),
+                &Default::default(),
+            )
+            .expect("");
+
+        assert_eq!(
+            schema.definitions.len(),
+            3,
+            "Expected 3 definitions, but got {}, schema: {}",
+            schema.definitions.len(),
+            serde_json::to_string_pretty(&schema).unwrap_or_default()
+        );
+        validate::<NestedStruct>(
+            schema,
+            &[NestedStruct {
+                other: OtherStruct { field: "s".into() },
+                ..Default::default()
+            }],
+            &[],
+            &[],
+        );
+    }
+
+    #[test]
+    fn name_field_test() {
+        #[derive(Reflect, Deserialize, Serialize)]
+        pub struct StructWithNameField {
+            pub name: Name,
+            pub entity: Entity,
+        }
+        impl Default for StructWithNameField {
+            fn default() -> Self {
+                Self {
+                    name: Name::new(""),
+                    entity: Entity::from_raw(11),
+                }
+            }
+        }
+        let atr = AppTypeRegistry::default();
+        {
+            let mut register = atr.write();
+            register.register::<StructWithNameField>();
+        }
+        let types = atr.read();
+        let schema = types
+            .build_schema_for_type_id_with_definitions(
+                TypeId::of::<StructWithNameField>(),
+                &Default::default(),
+            )
+            .expect("");
+        validate::<StructWithNameField>(
+            schema,
+            &[StructWithNameField {
+                name: Name::new("test"),
+                entity: Entity::from_raw(11),
+            }],
+            &[
+                serde_json::json!({"name": "value", "entity": 1}),
+                serde_json::json!({"name": "other", "entity": u32::MAX - 1}),
+            ],
+            &[
+                serde_json::json!({"name": "other", "entity": -1}),
+                serde_json::json!({"name": "other", "entity": 0}),
+                serde_json::json!({"name1": "value"}),
+                serde_json::json!({"name": serde_json::Value::Null}),
+                serde_json::json!({}),
+                serde_json::json!(serde_json::Value::Null),
+            ],
+        );
+    }
+
+    #[test]
+    fn test_out_optional_tuple() {
+        let atr = AppTypeRegistry::default();
+        {
+            let mut register = atr.write();
+            register.register::<Option<(i8, Option<i16>)>>();
+        }
+        let types = atr.read();
+
+        let schema = types
+            .build_schema_for_type_id_with_definitions(
+                TypeId::of::<Option<(i8, Option<i16>)>>(),
+                &Default::default(),
+            )
+            .expect("");
+        validate::<Option<(i8, Option<i16>)>>(schema, &[None], &[], &[]);
+    }
+
+    #[test]
+    fn reflect_tuple_struct_with_one_field_that_is_struct() {
+        use bevy_ecs::prelude::ReflectComponent;
+        use bevy_reflect::prelude::ReflectDefault;
+
+        #[derive(Reflect, Default, Deserialize, Serialize)]
+        pub struct ThirdStruct {
+            pub map_strings: HashMap<String, i32>,
+        }
+        #[derive(Reflect, Default, Deserialize, Serialize, Component)]
+        #[reflect(Component, Default)]
+        /// A tuple struct with one field.
+        pub struct TupleStruct(pub HashMap<String, i32>);
+
+        let atr = AppTypeRegistry::default();
+        {
+            let mut register = atr.write();
+            register.register::<TupleStruct>();
+        }
+        let types = atr.read();
+        let schema = types
+            .build_schema_for_type_id_with_definitions(
+                TypeId::of::<TupleStruct>(),
+                &Default::default(),
+            )
+            .expect("");
+        validate::<TupleStruct>(
+            schema,
+            &[TupleStruct(
+                [
+                    ("s".to_string(), 0),
+                    ("b".to_string(), 5),
+                    ("c".to_string(), 10),
+                ]
+                .into(),
+            )],
+            &[serde_json::json!({"json": 5})],
+            &[serde_json::json!("json")],
+        );
+    }
+
+    #[test]
+    fn reflect_non_zero_type() {
+        #[derive(Reflect, Deserialize, Serialize, Component)]
+        /// A tuple struct with one field.
+        pub struct TupleStruct(pub NonZeroI8);
+        impl Default for TupleStruct {
+            fn default() -> Self {
+                TupleStruct(NonZeroI8::new(15i8).expect("Should not fail"))
+            }
+        }
+        let atr = AppTypeRegistry::default();
+        {
+            let mut register = atr.write();
+            register.register::<TupleStruct>();
+        }
+        let types = atr.read();
+        let schema = types
+            .build_schema_for_type_id_with_definitions(
+                TypeId::of::<TupleStruct>(),
+                &Default::default(),
+            )
+            .expect("");
+
+        validate::<TupleStruct>(
+            schema,
+            &[TupleStruct(NonZeroI8::new(115i8).expect("Should not fail"))],
+            &[
+                serde_json::json!(15),
+                serde_json::json!(50),
+                serde_json::json!(-49),
+            ],
+            &[serde_json::json!(0), serde_json::Value::Null],
+        );
+    }
+
+    #[test]
+    fn reflect_tuple_struct_with_one_field() {
+        use bevy_ecs::prelude::ReflectComponent;
+        use bevy_reflect::prelude::ReflectDefault;
+        #[derive(Reflect, Deserialize, Serialize, Component)]
+        #[reflect(Component, Default)]
+        /// A tuple struct with one field.
+        pub struct TupleStruct(#[reflect(@10..=50i8)] pub i8);
+        impl Default for TupleStruct {
+            fn default() -> Self {
+                TupleStruct(15)
+            }
+        }
+        let atr = AppTypeRegistry::default();
+        {
+            let mut register = atr.write();
+            register.register::<TupleStruct>();
+        }
+        let types = atr.read();
+        let schema = types
+            .build_schema_for_type_id_with_definitions(
+                TypeId::of::<TupleStruct>(),
+                &Default::default(),
+            )
+            .expect("");
+        let range: MinMaxValues = (&schema).into();
+        assert!(!range.in_range(51));
+        assert!(range.in_range(15));
+        assert!(range.in_range(50));
+        assert!(!range.in_range(51));
+
+        validate::<TupleStruct>(
+            schema,
+            &[TupleStruct(15)],
+            &[
+                serde_json::json!(15),
+                serde_json::json!(50),
+                serde_json::json!(49),
+                serde_json::json!(10),
+            ],
+            &[
+                serde_json::json!(9),
+                serde_json::json!(51),
+                serde_json::json!(-1),
+                serde_json::json!(5.3),
+                serde_json::Value::Null,
+            ],
+        );
+    }
+
+    #[test]
+    fn test_fun() {
+        #[derive(Reflect)]
+        struct Unit(Option<f32>);
+        let atr = AppTypeRegistry::default();
+        {
+            let mut register = atr.write();
+            register.register::<Unit>();
+        }
+        let types = atr.read();
+        dbg!(types.get(TypeId::of::<Unit>()));
+        let schema = types
+            .build_schema_for_type_id_with_definitions(TypeId::of::<Unit>(), &Default::default())
+            .expect("");
+        eprintln!("{}", serde_json::to_string_pretty(&schema).expect(""));
     }
 }

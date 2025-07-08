@@ -377,18 +377,18 @@ use bevy_ecs::{
     world::World,
 };
 use bevy_platform::collections::HashMap;
+use bevy_reflect::Reflect;
 use bevy_utils::prelude::default;
 use builtin_methods::{
     BevyGetCommand, BevyGetResourceCommand, BevyInsertCommand, BevyQueryCommand, BevySpawnCommand,
     RpcDiscoverCommand,
 };
 use cmd::{RemoteCommandAppExt, RemoteCommandSupport};
-use schemas::open_rpc::OpenRpcDocument;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{any::TypeId, hash::Hash, sync::RwLock};
 
-use crate::schemas::ReflectJsonSchema;
+use crate::schemas::RegisterReflectJsonSchemas;
 
 pub mod builtin_methods;
 pub mod cmd;
@@ -520,8 +520,7 @@ impl Default for RemotePlugin {
 
 impl Plugin for RemotePlugin {
     fn build(&self, app: &mut App) {
-        app.register_type::<schemas::open_rpc::OpenRpcDocument>()
-            .register_type_data::<schemas::open_rpc::OpenRpcDocument, schemas::ReflectJsonSchema>();
+        app.register_schema_base_types();
 
         let mut remote_methods = RemoteMethods::new();
 
@@ -541,7 +540,6 @@ impl Plugin for RemotePlugin {
             );
         }
         app.add_remote_method::<RpcDiscoverCommand>()
-            .register_type_data::<OpenRpcDocument, ReflectJsonSchema>()
             .add_remote_method::<BevyGetCommand>()
             .add_remote_method::<BevySpawnCommand>()
             .add_remote_method::<BevyGetResourceCommand>()
@@ -800,7 +798,7 @@ impl From<BrpResult> for BrpPayload {
 }
 
 /// An error a request might return.
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Reflect)]
 pub struct BrpError {
     /// Defines the general type of the error.
     pub code: i16,
@@ -808,6 +806,7 @@ pub struct BrpError {
     pub message: String,
     /// Optional additional error data.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[reflect(ignore)]
     pub data: Option<Value>,
 }
 

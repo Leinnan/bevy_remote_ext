@@ -3,16 +3,18 @@
 use alloc::borrow::Cow;
 use bevy_platform::collections::HashMap;
 use bevy_reflect::{
-    GetTypeRegistration, Reflect, TypeRegistration, TypeRegistry, prelude::ReflectDefault,
-    serde::ReflectSerializer,
+    prelude::ReflectDefault, serde::ReflectSerializer, GetTypeRegistration, Reflect, TypeInfo,
+    TypeRegistration, TypeRegistry,
 };
 use core::any::TypeId;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::schemas::{
+    reflect_info::{
+        OptionalInfoReader, SchemaNumber, TypeDefinitionBuilder, TypeReferenceId, TypeReferencePath,
+    },
     SchemaTypesMetadata,
-    reflect_info::{SchemaNumber, TypeInformation, TypeReferenceId, TypeReferencePath},
 };
 
 /// Helper trait for converting `TypeRegistration` to `JsonSchemaBevyType`
@@ -41,8 +43,7 @@ impl TypeRegistrySchemaReader for TypeRegistry {
         type_id: TypeId,
         extra_info: &SchemaTypesMetadata,
     ) -> Option<JsonSchemaBevyType> {
-        let type_reg = self.get(type_id)?;
-        let mut schema: JsonSchemaBevyType = (type_reg, extra_info).try_into().ok()?;
+        let mut schema = self.build_schema_for_type_id_with_definitions(type_id, extra_info)?;
         schema.schema = Some(SchemaMarker.into());
         schema.default_value = self.try_get_default_value_for_type_id(type_id);
 
@@ -64,38 +65,6 @@ impl TypeRegistrySchemaReader for TypeRegistry {
         }
 
         None
-    }
-}
-
-/// Error type for invalid JSON Schema conversions.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum InvalidJsonSchema {
-    /// The type cannot be converted to a valid JSON Schema.
-    InvalidType,
-}
-
-impl TryFrom<(&TypeRegistration, &SchemaTypesMetadata)> for JsonSchemaBevyType {
-    type Error = InvalidJsonSchema;
-
-    fn try_from(value: (&TypeRegistration, &SchemaTypesMetadata)) -> Result<Self, Self::Error> {
-        let (reg, metadata) = value;
-        // if let Some(s) = reg.data::<ReflectJsonSchema>() {
-        //     return Ok(s.0.clone());
-        // }
-        let mut schema: JsonSchemaBevyType = TypeInformation::from(reg)
-            .to_schema_type_info_with_metadata(metadata)
-            .to_definition()
-            .into();
-        schema.reflect_type_data = metadata.get_registered_reflect_types(reg);
-        Ok(schema)
-    }
-}
-
-impl TryFrom<&TypeRegistration> for JsonSchemaBevyType {
-    type Error = InvalidJsonSchema;
-
-    fn try_from(value: &TypeRegistration) -> Result<Self, Self::Error> {
-        (value, &SchemaTypesMetadata::default()).try_into()
     }
 }
 
@@ -126,11 +95,6 @@ impl From<SchemaMarker> for Cow<'static, str> {
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default, Reflect)]
 #[serde(rename_all = "camelCase")]
 pub struct JsonSchemaBevyType {
-    /// JSON Schema specific field.
-    /// This keyword declares an identifier for the schema resource.
-    #[serde(skip_serializing_if = "str::is_empty", default)]
-    #[serde(rename = "$id")]
-    pub id: Cow<'static, str>,
     /// Identifies the JSON Schema version used in the schema.
     #[serde(rename = "$schema")]
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -168,12 +132,14 @@ pub struct JsonSchemaBevyType {
     ///
     /// It contains type info of value of the Map.
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub value_type: Option<JsonSchemaVariant>,
+    #[reflect(ignore)]
+    pub value_type: Option<Box<JsonSchemaBevyType>>,
     /// Bevy specific field, provided when [`SchemaKind`] `kind` field is equal to [`SchemaKind::Map`].
     ///
     /// It contains type info of key of the Map.
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub key_type: Option<JsonSchemaVariant>,
+    #[reflect(ignore)]
+    pub key_type: Option<Box<JsonSchemaBevyType>>,
     /// The type keyword is fundamental to JSON Schema. It specifies the data type for a schema.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     #[serde(rename = "type")]
@@ -184,6 +150,13 @@ pub struct JsonSchemaBevyType {
     /// values of instance names that do not appear in the annotation results of either "properties" or "patternProperties".
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub additional_properties: Option<JsonSchemaVariant>,
+    /// The behavior of this keyword depends on the presence and annotation results of "properties"
+    /// and "patternProperties" within the same schema object.
+    /// Validation with "additionalProperties" applies only to the child
+    /// values of instance names that do not appear in the annotation results of either "properties" or "patternProperties".
+    #[serde(skip_serializing_if = "HashMap::is_empty", default)]
+    #[reflect(ignore)]
+    pub pattern_properties: HashMap<Cow<'static, str>, Box<JsonSchemaBevyType>>,
     /// Validation succeeds if, for each name that appears in both the instance and as a name
     /// within this keyword's value, the child instance for that name successfully validates
     /// against the corresponding schema.
@@ -194,7 +167,8 @@ pub struct JsonSchemaBevyType {
     pub required: Vec<Cow<'static, str>>,
     /// An instance validates successfully against this keyword if it validates successfully against exactly one schema defined by this keyword's value.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
-    pub one_of: Vec<JsonSchemaVariant>,
+    #[reflect(ignore)]
+    pub one_of: Vec<Box<JsonSchemaBevyType>>,
     /// Validation succeeds if each element of the instance validates against the schema at the same position, if any. This keyword does not constrain the length of the array. If the array is longer than this keyword's value, this keyword validates only the prefix of matching length.
     ///
     /// This keyword produces an annotation value which is the largest index to which this keyword
@@ -252,6 +226,11 @@ pub struct JsonSchemaBevyType {
     /// Type description
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub description: Option<Cow<'static, str>>,
+    /// This keyword's value MUST be a valid JSON Schema.
+    /// An instance is valid against this keyword if it fails to validate successfully against the schema defined by this keyword.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[reflect(ignore)]
+    pub not: Option<Box<JsonSchemaBevyType>>,
     /// Default value for the schema.
     #[serde(skip_serializing_if = "Option::is_none", default, rename = "default")]
     #[reflect(ignore)]
@@ -289,7 +268,7 @@ impl From<JsonSchemaBevyType> for JsonSchemaVariant {
 }
 
 /// Kind of json schema, maps [`bevy_reflect::TypeInfo`] type
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default, Reflect)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default, Reflect, Copy)]
 pub enum SchemaKind {
     /// Struct
     #[default]
@@ -314,6 +293,38 @@ pub enum SchemaKind {
     Opaque,
     /// Optional type
     Optional,
+}
+
+impl SchemaKind {
+    /// Creates a [`SchemaKind`] from a [`TypeRegistration`].
+    pub fn from_type_reg(type_reg: &TypeRegistration) -> Self {
+        if let Some(info) =
+            super::reflect_info::BASE_TYPES_INFO.get(&type_reg.type_info().type_id())
+        {
+            return info.schema_kind;
+        }
+        if type_reg.try_get_optional().is_some() {
+            return SchemaKind::Optional;
+        }
+        match type_reg.type_info() {
+            TypeInfo::Struct(_) => SchemaKind::Struct,
+            TypeInfo::TupleStruct(_) => SchemaKind::TupleStruct,
+            TypeInfo::Tuple(_) => SchemaKind::Tuple,
+            TypeInfo::List(_) => SchemaKind::List,
+            TypeInfo::Array(_) => SchemaKind::Array,
+            TypeInfo::Map(_) => SchemaKind::Map,
+            TypeInfo::Set(_) => SchemaKind::Set,
+            TypeInfo::Opaque(o) => {
+                let schema_type: SchemaType = o.ty().id().into();
+                match schema_type {
+                    SchemaType::Object => SchemaKind::Struct,
+                    SchemaType::Array => SchemaKind::Array,
+                    _ => SchemaKind::Value,
+                }
+            }
+            TypeInfo::Enum(_) => SchemaKind::Enum,
+        }
+    }
 }
 /// Represents the possible type variants for a JSON Schema.
 ///
@@ -383,32 +394,22 @@ pub enum SchemaType {
 
 impl From<TypeId> for SchemaType {
     fn from(value: TypeId) -> Self {
-        if value.eq(&TypeId::of::<bool>()) {
-            Self::Boolean
-        } else if value.eq(&TypeId::of::<f32>()) || value.eq(&TypeId::of::<f64>()) {
-            Self::Number
-        } else if value.eq(&TypeId::of::<u8>())
-            || value.eq(&TypeId::of::<u16>())
-            || value.eq(&TypeId::of::<u32>())
-            || value.eq(&TypeId::of::<u64>())
-            || value.eq(&TypeId::of::<u128>())
-            || value.eq(&TypeId::of::<usize>())
-            || value.eq(&TypeId::of::<i8>())
-            || value.eq(&TypeId::of::<i16>())
-            || value.eq(&TypeId::of::<i32>())
-            || value.eq(&TypeId::of::<i64>())
-            || value.eq(&TypeId::of::<i128>())
-            || value.eq(&TypeId::of::<isize>())
-        {
-            Self::Integer
-        } else if value.eq(&TypeId::of::<str>())
-            || value.eq(&TypeId::of::<char>())
-            || value.eq(&TypeId::of::<String>())
-        {
-            Self::String
+        if let Some(info) = super::reflect_info::BASE_TYPES_INFO.get(&value) {
+            info.schema_type
         } else {
             Self::Object
         }
+    }
+}
+
+impl From<SchemaType> for SchemaTypeVariant {
+    fn from(value: SchemaType) -> Self {
+        SchemaTypeVariant::Single(value)
+    }
+}
+impl From<SchemaType> for Option<SchemaTypeVariant> {
+    fn from(value: SchemaType) -> Self {
+        Some(SchemaTypeVariant::Single(value))
     }
 }
 
@@ -426,9 +427,9 @@ impl SchemaType {
 
 #[cfg(test)]
 mod tests {
-    use crate::schemas::ReflectJsonSchema;
     use crate::schemas::open_rpc::OpenRpcDocument;
     use crate::schemas::reflect_info::ReferenceLocation;
+    use crate::schemas::ReflectJsonSchema;
 
     use super::*;
     use bevy_ecs::prelude::ReflectComponent;
@@ -706,13 +707,13 @@ mod tests {
         #[reflect(Resource, Default)]
         struct Foo {
             /// Test doc
-            a: u16,
+            a: f32,
+            b: u8,
         }
 
         let schema = export_type::<Foo>();
         let schema_as_value = serde_json::to_value(&schema).expect("Failed to serialize schema");
         let mut value = json!({
-          "$id": "urn:bevy:bevy_remote-schemas-json_schema-tests-Foo",
           "shortPath": "Foo",
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "typePath": "bevy_remote::schemas::json_schema::tests::Foo",
@@ -723,20 +724,29 @@ mod tests {
             "Default",
           ],
           "default": {
-            "a": 0
+            "a": 0.0,
+            "b": 0
           },
           "kind": "Struct",
           "type": "object",
           "additionalProperties": false,
           "properties": {
             "a": {
-              "maximum": 65535,
-              "minimum": 0,
-              "type": "integer"
+              "type": "number",
+              "kind": "Value",
+              "typePath": "f32"
             },
+            "b": {
+              "minimum": 0,
+              "maximum": 255,
+              "type": "integer",
+              "kind": "Value",
+              "typePath": "u8"
+            }
           },
           "required": [
-            "a"
+            "a",
+            "b"
           ]
         });
         if cfg!(feature = "documentation") {
