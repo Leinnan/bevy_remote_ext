@@ -29,7 +29,7 @@ use crate::{
     cmd::RemoteCommandSupport,
     error_codes,
     schemas::{
-        json_schema::{JsonSchemaBevyType, JsonSchemaVariant, SchemaMarker, SchemaTypeVariant},
+        json_schema::{JsonSchemaBevyType, JsonSchemaVariant, SchemaMarker},
         open_rpc::OpenRpcDocument,
         reflect_info::{TypeDefinitionBuilder, TypeReferencePath},
     },
@@ -367,6 +367,11 @@ pub struct BrpJsonSchemaQueryFilter {
     /// Constrain resource by type
     #[serde(default)]
     pub type_limit: JsonSchemaTypeLimit,
+
+    /// Add `one_of` field to the root of the schema.
+    /// It will allow to use the schema for validation values if they match the format used by the Bevy reflect serialization.
+    #[serde(default)]
+    pub meta_schemas_export: bool,
 }
 
 impl BrpJsonSchemaQueryFilter {
@@ -1386,53 +1391,37 @@ pub(crate) fn export_registry_types_typed(
             Some((schema_id, Box::new(schema)))
         })
         .collect();
-    schema.one_of = schema
-        .definitions
-        .iter()
-        .flat_map(|(id, schema)| {
-            if !schema
-                .reflect_type_data
-                .contains(&Cow::Borrowed("Component"))
-            {
-                return None;
-            }
-            let schema = if schema
-                .kind
-                .eq(&Some(crate::schemas::json_schema::SchemaKind::Struct))
-                && schema
-                    .additional_properties
-                    .eq(&Some(JsonSchemaVariant::BoolValue(false)))
-                && schema.properties.is_empty()
-                && schema.pattern_properties.is_empty()
-            {
-                JsonSchemaBevyType {
-                    const_value: Some(serde_json::Value::String(schema.type_path.to_string())),
-                    description: schema.description.clone(),
-                    ..Default::default()
+    if filter.meta_schemas_export {
+        schema.one_of = schema
+            .definitions
+            .iter()
+            .flat_map(|(id, schema)| {
+                if !schema.reflect_type_data.contains(&"Serialize".into())
+                    || !schema.reflect_type_data.contains(&"Deserialize".into())
+                {
+                    return None;
                 }
-            } else {
-                JsonSchemaBevyType {
+                let schema = JsonSchemaBevyType {
                     properties: [(
                         schema.type_path.clone(),
                         JsonSchemaBevyType {
-                            ref_type: Some(TypeReferencePath::definition(id.clone())),
+                            ref_type: Some(TypeReferencePath::definition((*id).clone())),
                             description: schema.description.clone(),
                             ..Default::default()
                         }
                         .into(),
                     )]
                     .into(),
-                    schema_type: Some(SchemaTypeVariant::Single(
-                        crate::schemas::json_schema::SchemaType::Object,
-                    )),
+                    schema_type: Some(crate::schemas::json_schema::SchemaType::Object.into()),
                     additional_properties: Some(JsonSchemaVariant::BoolValue(false)),
                     description: schema.description.clone(),
+                    reflect_type_data: schema.reflect_type_data.clone(),
                     ..Default::default()
-                }
-            };
-            Some(schema.into())
-        })
-        .collect();
+                };
+                Some(schema.into())
+            })
+            .collect();
+    }
     Ok(schema)
 }
 
@@ -1735,6 +1724,97 @@ mod tests {
     }
 
     #[test]
+    fn reflection_serialization_tests() {
+        use bevy_ecs::resource::Resource;
+
+        #[derive(Reflect, Default, Deserialize, Serialize, Resource)]
+        #[reflect(Resource)]
+        pub struct ResourceStruct {
+            /// FIELD DOC
+            pub field: String,
+            pub second_field: Option<(u8, Option<u16>)>,
+        }
+        #[derive(Reflect, Default, Deserialize, Serialize, Component)]
+        #[reflect(Component)]
+        pub struct OtherStruct {
+            /// FIELD DOC
+            pub field: String,
+            pub second_field: Option<(u8, Option<u16>)>,
+        }
+        /// STRUCT DOC
+        #[derive(Reflect, Default, Deserialize, Serialize, Component)]
+        #[reflect(Component)]
+        pub struct SecondStruct;
+        /// STRUCT DOC
+        #[derive(Reflect, Default, Deserialize, Serialize, Component)]
+        #[reflect(Component)]
+        pub struct ThirdStruct {
+            pub array_strings: Vec<String>,
+            pub array_structs: [OtherStruct; 5],
+            // pub map_strings: HashMap<String, i32>,
+        }
+        #[derive(Reflect, Default, Deserialize, Serialize, Component)]
+        #[reflect(Component)]
+        pub struct NestedStruct {
+            pub other: OtherStruct,
+            pub second: SecondStruct,
+            /// DOC FOR FIELD
+            pub third: ThirdStruct,
+        }
+        let atr = AppTypeRegistry::default();
+        {
+            use crate::schemas::ReflectJsonSchemaForceAsArray;
+
+            let mut register = atr.write();
+            register.register::<NestedStruct>();
+            register.register::<ResourceStruct>();
+            register.register::<bevy_math::Vec3>();
+            register.register_type_data::<bevy_math::Vec3, ReflectJsonSchemaForceAsArray>();
+        }
+        let value = NestedStruct {
+            other: OtherStruct {
+                field: "S".into(),
+                second_field: Some((0, None)),
+            },
+            second: SecondStruct,
+            third: ThirdStruct {
+                array_strings: ["s".into(), "SS".into()].into(),
+                array_structs: [
+                    OtherStruct::default(),
+                    OtherStruct::default(),
+                    OtherStruct::default(),
+                    OtherStruct::default(),
+                    OtherStruct::default(),
+                ],
+            },
+        };
+        let mut world = World::new();
+        world.insert_resource(atr.clone());
+        world.insert_resource(SchemaTypesMetadata::default());
+        let response = export_registry_types_ext(BrpJsonSchemaQueryFilter::default(), &world);
+        let schema_value = serde_json::to_value(response).expect("Failed to serialize schema");
+        let type_registry = atr.read();
+        let serializer = ReflectSerializer::new(&value, &type_registry);
+        let res = ResourceStruct {
+            field: "SET".into(),
+            second_field: Some((45, None)),
+        };
+        let serializer_2 = ReflectSerializer::new(&res, &type_registry);
+        let json = serde_json::to_value(&serializer).expect("msg");
+        let validator = jsonschema::options()
+            .with_draft(jsonschema::Draft::Draft202012)
+            .build(&schema_value)
+            .expect("Failed to validate json schema");
+        assert!(validator.validate(&json).is_ok());
+        let json = serde_json::to_value(&serializer_2).expect("msg");
+        eprintln!(
+            "{}",
+            serde_json::to_string_pretty(&json).unwrap_or_default()
+        );
+        assert!(validator.validate(&json).is_ok());
+    }
+
+    #[test]
     #[cfg(feature = "bevy_math")]
     fn export_schema_test() {
         #[derive(Reflect, Default, Deserialize, Serialize, Component)]
@@ -1765,7 +1845,6 @@ mod tests {
             pub third: ThirdStruct,
         }
 
-        let mut world = World::new();
         let atr = AppTypeRegistry::default();
         {
             use crate::schemas::ReflectJsonSchemaForceAsArray;
@@ -1775,6 +1854,7 @@ mod tests {
             register.register::<bevy_math::Vec3>();
             register.register_type_data::<bevy_math::Vec3, ReflectJsonSchemaForceAsArray>();
         }
+        let mut world = World::new();
         world.insert_resource(atr);
         world.insert_resource(SchemaTypesMetadata::default());
         let response = export_registry_types_ext(BrpJsonSchemaQueryFilter::default(), &world);

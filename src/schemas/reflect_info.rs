@@ -1042,7 +1042,17 @@ impl From<&InternalSchemaType> for Option<SchemaTypeVariant> {
                 ..
             } => Some(SchemaTypeVariant::Single(*primitive)),
             InternalSchemaType::Array { .. } => Some(SchemaTypeVariant::Single(SchemaType::Array)),
-            InternalSchemaType::FieldsHolder(fields) => match fields.fields_type {
+            InternalSchemaType::FieldsHolder(fields) => match &fields.fields_type {
+                s if fields.fields.len() == 0 => {
+                    let first = if s.eq(&FieldType::Named) {
+                        SchemaType::Object
+                    } else {
+                        SchemaType::Array
+                    };
+                    Some(SchemaTypeVariant::Multiple(
+                        [first, SchemaType::Null].into(),
+                    ))
+                }
                 FieldType::Named => Some(SchemaTypeVariant::Single(SchemaType::Object)),
                 FieldType::Unnamed if fields.fields.len() == 1 => {
                     let schema: SchemaType = fields.fields[0].type_id.into();
@@ -1333,6 +1343,7 @@ impl TypeDefinitionBuilder for TypeRegistry {
     ) -> Option<(Option<TypeReferenceId>, JsonSchemaBevyType)> {
         let type_reg = self.get(type_id)?;
         let internal = InternalSchemaType::from_type_registration(type_reg, self);
+        dbg!(&internal);
 
         let mut id: Option<TypeReferenceId> = Some(type_reg.type_info().type_path().into());
         if let Some(custom_schema) = &type_reg.data::<super::ReflectJsonSchema>() {
@@ -1494,7 +1505,9 @@ impl TypeDefinitionBuilder for TypeRegistry {
             ..default()
         };
         let internal = InternalSchemaType::from_type_registration(type_reg, self);
+        dbg!(&internal);
         schema.schema_type = (&internal).into();
+        dbg!(&schema.schema_type);
         match internal {
             InternalSchemaType::PrimitiveType {
                 type_id,
@@ -2276,7 +2289,7 @@ pub(super) mod tests {
     #[test]
     fn test_fun() {
         #[derive(Reflect)]
-        struct Unit(Option<f32>);
+        struct Unit;
         let atr = AppTypeRegistry::default();
         {
             let mut register = atr.write();
@@ -2284,6 +2297,7 @@ pub(super) mod tests {
         }
         let types = atr.read();
         dbg!(types.get(TypeId::of::<Unit>()));
+        dbg!(Unit::get_type_registration());
         let schema = types
             .build_schema_for_type_id_with_definitions(TypeId::of::<Unit>(), &Default::default())
             .expect("");
