@@ -366,6 +366,7 @@
 
 extern crate alloc;
 
+use alloc::borrow::Cow;
 use async_channel::{Receiver, Sender};
 use bevy_app::{MainScheduleOrder, prelude::*};
 use bevy_derive::{Deref, DerefMut};
@@ -373,7 +374,7 @@ use bevy_ecs::{
     entity::Entity,
     resource::Resource,
     schedule::{IntoScheduleConfigs, ScheduleLabel, SystemSet},
-    system::{Commands, In, IntoSystem, ResMut, System, SystemId},
+    system::{Commands, In, ResMut, System, SystemId},
     world::World,
 };
 use bevy_platform::collections::HashMap;
@@ -383,12 +384,15 @@ use builtin_methods::{
     BevyGetCommand, BevyGetResourceCommand, BevyInsertCommand, BevyQueryCommand, BevySpawnCommand,
     RpcDiscoverCommand,
 };
-use cmd::{RemoteCommandAppExt, RemoteCommandSupport};
+use cmd::RemoteCommandAppExt;
+use core::any::TypeId;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{any::TypeId, hash::Hash, sync::RwLock};
 
-use crate::schemas::RegisterReflectJsonSchemas;
+use crate::{
+    cmd::RemoteCommand,
+    schemas::{RegisterReflectJsonSchemas, open_rpc::ServerObject},
+};
 
 pub mod builtin_methods;
 pub mod cmd;
@@ -404,155 +408,74 @@ const CHANNEL_SIZE: usize = 16;
 /// the available protocols and its default methods.
 ///
 /// [crate-level documentation]: crate
-pub struct RemotePlugin {
-    /// The verbs that the server will recognize and respond to.
-    methods: RwLock<Vec<(String, RemoteMethodHandler)>>,
-}
-
-impl RemotePlugin {
-    /// Create a [`RemotePlugin`] with the default address and port but without
-    /// any associated methods.
-    fn empty() -> Self {
-        Self {
-            methods: RwLock::new(vec![]),
-        }
-    }
-
-    /// Add a remote method to the plugin using the given `name` and `handler`.
-    #[must_use]
-    pub fn with_method<M>(
-        mut self,
-        name: impl Into<String>,
-        handler: impl IntoSystem<In<Option<Value>>, BrpResult, M>,
-    ) -> Self {
-        self.methods.get_mut().unwrap().push((
-            name.into(),
-            RemoteMethodHandler::Instant(Box::new(IntoSystem::into_system(handler)), None),
-        ));
-        self
-    }
-
-    /// Add a remote method to the plugin using the given Type that implements remote command.
-    #[must_use]
-    pub fn with_typed_method<T: cmd::RemoteCommandSupport>(mut self) -> Self {
-        self.methods.get_mut().unwrap().push((
-            T::RPC_PATH.into(),
-            RemoteMethodHandler::Instant(
-                Box::new(IntoSystem::into_system(cmd::remote_command_system::<T>)),
-                Some(CommandTypeInfo {
-                    command_type: T::get_type_registration().type_id(),
-                    arg_type: TypeId::of::<T::ParameterType>(),
-                    response_type: TypeId::of::<T::ResponseType>(),
-                }),
-            ),
-        ));
-        self
-    }
-
-    /// Add a remote method with a watching handler to the plugin using the given `name`.
-    #[must_use]
-    pub fn with_watching_method<M>(
-        mut self,
-        name: impl Into<String>,
-        handler: impl IntoSystem<In<Option<Value>>, BrpResult<Option<Value>>, M>,
-    ) -> Self {
-        self.methods.get_mut().unwrap().push((
-            name.into(),
-            RemoteMethodHandler::Watching(Box::new(IntoSystem::into_system(handler))),
-        ));
-        self
-    }
-}
-
-impl Default for RemotePlugin {
-    fn default() -> Self {
-        Self::empty()
-            .with_method(
-                builtin_methods::BRP_REMOVE_METHOD,
-                builtin_methods::process_remote_remove_request,
-            )
-            .with_method(
-                builtin_methods::BRP_DESTROY_METHOD,
-                builtin_methods::process_remote_destroy_request,
-            )
-            .with_method(
-                builtin_methods::BRP_REPARENT_METHOD,
-                builtin_methods::process_remote_reparent_request,
-            )
-            .with_method(
-                builtin_methods::BRP_LIST_METHOD,
-                builtin_methods::process_remote_list_request,
-            )
-            .with_method(
-                builtin_methods::BRP_MUTATE_COMPONENT_METHOD,
-                builtin_methods::process_remote_mutate_component_request,
-            )
-            .with_watching_method(
-                builtin_methods::BRP_GET_AND_WATCH_METHOD,
-                builtin_methods::process_remote_get_watching_request,
-            )
-            .with_watching_method(
-                builtin_methods::BRP_LIST_AND_WATCH_METHOD,
-                builtin_methods::process_remote_list_watching_request,
-            )
-            .with_method(
-                builtin_methods::BRP_INSERT_RESOURCE_METHOD,
-                builtin_methods::process_remote_insert_resource_request,
-            )
-            .with_method(
-                builtin_methods::BRP_REMOVE_RESOURCE_METHOD,
-                builtin_methods::process_remote_remove_resource_request,
-            )
-            .with_method(
-                builtin_methods::BRP_MUTATE_RESOURCE_METHOD,
-                builtin_methods::process_remote_mutate_resource_request,
-            )
-            .with_method(
-                builtin_methods::BRP_LIST_RESOURCES_METHOD,
-                builtin_methods::process_remote_list_resources_request,
-            )
-            .with_method(
-                builtin_methods::BRP_REGISTRY_SCHEMA_METHOD,
-                builtin_methods::export_registry_types,
-            )
-    }
-}
+pub struct RemotePlugin;
 
 impl Plugin for RemotePlugin {
     fn build(&self, app: &mut App) {
         app.register_schema_base_types();
 
-        let mut remote_methods = RemoteMethods::new();
-
-        let plugin_methods = &mut *self.methods.write().unwrap();
-        for (name, handler) in plugin_methods.drain(..) {
-            remote_methods.insert(
-                name,
-                match handler {
-                    RemoteMethodHandler::Instant(system, info) => RemoteMethodSystemId::Instant(
-                        app.main_mut().world_mut().register_boxed_system(system),
-                        info,
-                    ),
-                    RemoteMethodHandler::Watching(system) => RemoteMethodSystemId::Watching(
-                        app.main_mut().world_mut().register_boxed_system(system),
-                    ),
-                },
-            );
-        }
-        app.add_remote_method::<RpcDiscoverCommand>()
+        app.init_resource::<RemoteMethods>()
+            .add_remote_method::<RpcDiscoverCommand>()
             .add_remote_method::<BevyGetCommand>()
             .add_remote_method::<BevySpawnCommand>()
             .add_remote_method::<BevyGetResourceCommand>()
             .add_remote_method::<BevyInsertCommand>()
-            .add_remote_method::<BevyQueryCommand>();
+            .add_remote_method::<BevyQueryCommand>()
+            .register_untyped_method(
+                builtin_methods::BRP_REMOVE_METHOD,
+                builtin_methods::process_remote_remove_request,
+            )
+            .register_untyped_method(
+                builtin_methods::BRP_DESTROY_METHOD,
+                builtin_methods::process_remote_destroy_request,
+            )
+            .register_untyped_method(
+                builtin_methods::BRP_REPARENT_METHOD,
+                builtin_methods::process_remote_reparent_request,
+            )
+            .register_untyped_method(
+                builtin_methods::BRP_LIST_METHOD,
+                builtin_methods::process_remote_list_request,
+            )
+            .register_untyped_method(
+                builtin_methods::BRP_MUTATE_COMPONENT_METHOD,
+                builtin_methods::process_remote_mutate_component_request,
+            )
+            .register_untyped_watching_method(
+                builtin_methods::BRP_GET_AND_WATCH_METHOD,
+                builtin_methods::process_remote_get_watching_request,
+            )
+            .register_untyped_watching_method(
+                builtin_methods::BRP_LIST_AND_WATCH_METHOD,
+                builtin_methods::process_remote_list_watching_request,
+            )
+            .register_untyped_method(
+                builtin_methods::BRP_INSERT_RESOURCE_METHOD,
+                builtin_methods::process_remote_insert_resource_request,
+            )
+            .register_untyped_method(
+                builtin_methods::BRP_REMOVE_RESOURCE_METHOD,
+                builtin_methods::process_remote_remove_resource_request,
+            )
+            .register_untyped_method(
+                builtin_methods::BRP_MUTATE_RESOURCE_METHOD,
+                builtin_methods::process_remote_mutate_resource_request,
+            )
+            .register_untyped_method(
+                builtin_methods::BRP_LIST_RESOURCES_METHOD,
+                builtin_methods::process_remote_list_resources_request,
+            )
+            .register_untyped_method(
+                builtin_methods::BRP_REGISTRY_SCHEMA_METHOD,
+                builtin_methods::export_registry_types,
+            );
 
         app.init_schedule(RemoteLast)
             .world_mut()
             .resource_mut::<MainScheduleOrder>()
             .insert_after(Last, RemoteLast);
 
-        app.insert_resource(remote_methods)
-            .init_resource::<schemas::SchemaTypesMetadata>()
+        app.init_resource::<schemas::SchemaTypesMetadata>()
             .init_resource::<RemoteWatchingRequests>()
             .add_systems(PreStartup, setup_mailbox_channel)
             .configure_sets(
@@ -590,18 +513,6 @@ pub enum RemoteSystems {
 #[deprecated(since = "0.17.0", note = "Renamed to `RemoteSystems`.")]
 pub type RemoteSet = RemoteSystems;
 
-/// A type to hold the allowed types of systems to be used as method handlers.
-#[derive(Debug)]
-pub enum RemoteMethodHandler {
-    /// A handler that only runs once and returns one response.
-    Instant(
-        Box<dyn System<In = In<Option<Value>>, Out = BrpResult>>,
-        Option<CommandTypeInfo>,
-    ),
-    /// A handler that watches for changes and response when a change is detected.
-    Watching(Box<dyn System<In = In<Option<Value>>, Out = BrpResult<Option<Value>>>>),
-}
-
 /// The [`SystemId`] of a function that implements a remote instant method (`bevy/get`, `bevy/query`, etc.)
 ///
 /// The first parameter is the JSON value of the `params`. Typically, an
@@ -621,27 +532,49 @@ pub type RemoteInstantMethodSystemId = SystemId<In<Option<Value>>, BrpResult>;
 /// handler is done in the [`RemotePlugin`].
 pub type RemoteWatchingMethodSystemId = SystemId<In<Option<Value>>, BrpResult<Option<Value>>>;
 
+/// A type to hold the allowed types of systems to be used as method handlers.
+#[derive(Debug)]
+pub enum RemoteMethodHandler {
+    /// A handler that only runs once and returns one response.
+    Instant(
+        Box<dyn System<In = In<Option<Value>>, Out = BrpResult>>,
+        Option<CommandTypeInfo>,
+    ),
+    /// A handler that watches for changes and response when a change is detected.
+    Watching(
+        Box<dyn System<In = In<Option<Value>>, Out = BrpResult<Option<Value>>>>,
+        Option<CommandTypeInfo>,
+    ),
+}
+
+/// Type information for remote commands.
+///
+/// This struct contains the [`TypeId`]s for the command type, its arguments, and its response.
+#[derive(Clone, Debug, Copy)]
+pub struct CommandTypeInfo {
+    /// The [`TypeId`] of the command type.
+    pub command_type: TypeId,
+    /// The [`TypeId`] of the argument type.
+    pub arg_type: TypeId,
+    /// The [`TypeId`] of the response type.
+    pub response_type: TypeId,
+}
+
 /// The [`SystemId`] of a function that can be used as a remote method.
 #[derive(Debug, Clone, Copy)]
 pub enum RemoteMethodSystemId {
     /// A handler that only runs once and returns one response.
     Instant(RemoteInstantMethodSystemId, Option<CommandTypeInfo>),
     /// A handler that watches for changes and response when a change is detected.
-    Watching(RemoteWatchingMethodSystemId),
-}
-
-#[derive(Clone, Debug, Copy)]
-pub struct CommandTypeInfo {
-    pub command_type: TypeId,
-    pub arg_type: TypeId,
-    pub response_type: TypeId,
+    Watching(RemoteWatchingMethodSystemId, Option<CommandTypeInfo>),
 }
 
 impl RemoteMethodSystemId {
+    /// Returns the [`CommandTypeInfo`] of the remote method.
     pub fn remote_type_info(&self) -> Option<CommandTypeInfo> {
         match self {
-            RemoteMethodSystemId::Instant(_system_id, type_info) => *type_info,
-            _ => None,
+            RemoteMethodSystemId::Instant(_, type_info)
+            | RemoteMethodSystemId::Watching(_, type_info) => *type_info,
         }
     }
 }
@@ -649,8 +582,11 @@ impl RemoteMethodSystemId {
 /// Holds all implementations of methods known to the server.
 ///
 /// Custom methods can be added to this list using [`RemoteMethods::insert`].
-#[derive(Debug, Resource, Default, Deref)]
-pub struct RemoteMethods(HashMap<String, RemoteMethodSystemId>);
+#[derive(Debug, Resource, Default)]
+pub struct RemoteMethods {
+    mappings: HashMap<Cow<'static, str>, RemoteMethodSystemId>,
+    servers: HashMap<TypeId, ServerObject>,
+}
 
 impl RemoteMethods {
     /// Creates a new [`RemoteMethods`] resource with no methods registered in it.
@@ -663,29 +599,54 @@ impl RemoteMethods {
     /// If there was an existing method with that name, returns its handler.
     pub fn insert(
         &mut self,
-        method_name: impl Into<String>,
+        method_name: impl Into<Cow<'static, str>>,
         handler: RemoteMethodSystemId,
     ) -> Option<RemoteMethodSystemId> {
-        self.0.insert(method_name.into(), handler)
+        self.mappings.insert(method_name.into(), handler)
     }
 
-    pub fn add_method<T: RemoteCommandSupport>(&mut self, system_id: RemoteInstantMethodSystemId) {
+    /// Adds a new method, replacing any existing method with that name.
+    pub fn add_method<T: RemoteCommand>(&mut self, system_id: RemoteInstantMethodSystemId) {
         self.insert(
             T::RPC_PATH,
-            RemoteMethodSystemId::Instant(
-                system_id,
-                Some(CommandTypeInfo {
-                    command_type: T::get_type_registration().type_id(),
-                    arg_type: TypeId::of::<T::ParameterType>(),
-                    response_type: TypeId::of::<T::ResponseType>(),
-                }),
-            ),
+            RemoteMethodSystemId::Instant(system_id, Some(T::get_command_type_info())),
         );
     }
 
-    /// Get a [`Vec<String>`] with method names.
-    pub fn methods(&self) -> Vec<String> {
-        self.keys().cloned().collect()
+    /// Adds a new method, replacing any existing method with that name.
+    pub fn add_watching_method<T: RemoteCommand<Option<Value>>>(
+        &mut self,
+        system_id: RemoteWatchingMethodSystemId,
+    ) {
+        self.insert(
+            T::RPC_PATH,
+            RemoteMethodSystemId::Watching(system_id, Some(T::get_command_type_info())),
+        );
+    }
+
+    /// Get a [`RemoteMethodSystemId`] with its method name.
+    pub fn get(&self, method: &str) -> Option<&RemoteMethodSystemId> {
+        self.mappings.get(method)
+    }
+
+    /// Get a [`Vec<&Cow<'_, str>>`] with method names.
+    pub fn methods(&self) -> Vec<&Cow<'_, str>> {
+        self.mappings.keys().collect()
+    }
+
+    /// Get a [`Vec<&ServerObject>`] with server objects.
+    pub fn server_list(&self) -> Vec<&ServerObject> {
+        self.servers.values().collect()
+    }
+
+    /// Registers a new server object mapping.
+    pub fn register_server(&mut self, server_id: TypeId, server: ServerObject) {
+        self.servers.insert(server_id, server);
+    }
+
+    /// Removes a server object mapping.
+    pub fn remove_server(&mut self, server_id: TypeId) {
+        self.servers.remove(&server_id);
     }
 }
 
@@ -1025,7 +986,7 @@ fn process_remote_requests(world: &mut World) {
 
                 let _ = message.sender.force_send(result);
             }
-            RemoteMethodSystemId::Watching(id) => {
+            RemoteMethodSystemId::Watching(id, _) => {
                 world
                     .resource_mut::<RemoteWatchingRequests>()
                     .0

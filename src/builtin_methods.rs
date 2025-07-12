@@ -2,6 +2,7 @@
 
 use alloc::borrow::Cow;
 use core::any::TypeId;
+use std::ops::Deref;
 
 use anyhow::{Result as AnyhowResult, anyhow};
 use bevy_derive::{Deref, DerefMut};
@@ -26,17 +27,14 @@ use serde_json::{Map, Value};
 
 use crate::{
     BrpError, BrpResult,
-    cmd::RemoteCommandSupport,
+    cmd::RemoteCommand,
     error_codes,
     schemas::{
         json_schema::{JsonSchemaBevyType, JsonSchemaVariant, SchemaMarker},
-        open_rpc::OpenRpcDocument,
+        open_rpc::{InfoObject, MethodObject, OpenRpcDocument, Parameter, ServerObject},
         reflect_info::{TypeDefinitionBuilder, TypeReferencePath},
     },
 };
-
-#[cfg(all(feature = "http", not(target_family = "wasm")))]
-use {crate::schemas::open_rpc::ServerObject, bevy_utils::default};
 
 /// The method path for a `bevy/get` request.
 pub const BRP_GET_METHOD: &str = "bevy/get";
@@ -543,7 +541,7 @@ fn parse_some<T: for<'de> Deserialize<'de>>(value: Option<Value>) -> Result<T, B
 #[derive(Reflect, Debug)]
 pub struct BevyGetCommand;
 
-impl RemoteCommandSupport for BevyGetCommand {
+impl RemoteCommand for BevyGetCommand {
     type ParameterType = BrpGetParams;
 
     type ResponseType = BrpGetResponse;
@@ -553,7 +551,7 @@ impl RemoteCommandSupport for BevyGetCommand {
     fn method_impl(
         input: Option<Self::ParameterType>,
         world: &mut World,
-    ) -> Result<Self::ResponseType, crate::BrpError> {
+    ) -> Result<BrpGetResponse, crate::BrpError> {
         let BrpGetParams {
             entity,
             components,
@@ -572,18 +570,16 @@ impl RemoteCommandSupport for BevyGetCommand {
 /// Retrieves the value of a given resource.
 #[derive(Reflect)]
 pub struct BevyGetResourceCommand;
-
-impl RemoteCommandSupport for BevyGetResourceCommand {
+impl RemoteCommand for BevyGetResourceCommand {
     type ParameterType = BrpGetResourceParams;
 
     type ResponseType = BrpGetResourceResponse;
 
     const RPC_PATH: &str = BRP_GET_RESOURCE_METHOD;
-
     fn method_impl(
         input: Option<Self::ParameterType>,
         world: &mut World,
-    ) -> Result<Self::ResponseType, crate::BrpError> {
+    ) -> Result<BrpGetResourceResponse, crate::BrpError> {
         let BrpGetResourceParams {
             resource: resource_path,
         } = Self::input_or_err(input)?;
@@ -793,13 +789,12 @@ fn reflect_component(
 #[derive(Reflect, Debug)]
 pub struct BevyQueryCommand;
 
-impl RemoteCommandSupport for BevyQueryCommand {
+impl RemoteCommand for BevyQueryCommand {
     type ParameterType = BrpQueryParams;
 
     type ResponseType = BrpQueryResponse;
 
     const RPC_PATH: &str = BRP_QUERY_METHOD;
-
     fn method_impl(
         input: Option<Self::ParameterType>,
         world: &mut World,
@@ -911,13 +906,12 @@ impl RemoteCommandSupport for BevyQueryCommand {
 #[derive(Reflect)]
 pub struct BevySpawnCommand;
 
-impl RemoteCommandSupport for BevySpawnCommand {
+impl RemoteCommand for BevySpawnCommand {
     type ParameterType = BrpSpawnParams;
 
     type ResponseType = BrpSpawnResponse;
 
     const RPC_PATH: &str = BRP_SPAWN_METHOD;
-
     fn method_impl(
         input: Option<Self::ParameterType>,
         world: &mut World,
@@ -943,41 +937,91 @@ impl RemoteCommandSupport for BevySpawnCommand {
 #[derive(Reflect)]
 pub struct RpcDiscoverCommand;
 
-impl RemoteCommandSupport for RpcDiscoverCommand {
+impl RemoteCommand for RpcDiscoverCommand {
     type ParameterType = ();
     type ResponseType = OpenRpcDocument;
 
     const RPC_PATH: &str = RPC_DISCOVER_METHOD;
-
     fn method_impl(
         _input: Option<Self::ParameterType>,
         world: &mut World,
     ) -> Result<Self::ResponseType, crate::BrpError> {
-        let remote_methods = world.resource::<crate::RemoteMethods>();
-
-        #[cfg(all(feature = "http", not(target_family = "wasm")))]
-        let servers = match (
-            world.get_resource::<crate::http::HostAddress>(),
-            world.get_resource::<crate::http::HostPort>(),
-        ) {
-            (Some(url), Some(port)) => Some(vec![ServerObject {
-                name: "Server".to_owned(),
-                url: format!("{}:{}", url.0, port.0),
-                ..default()
-            }]),
-            (Some(url), None) => Some(vec![ServerObject {
-                name: "Server".to_owned(),
-                url: url.0.to_string(),
-                ..default()
-            }]),
-            _ => None,
+        let remote_methods = world
+            .get_resource::<crate::RemoteMethods>()
+            .ok_or(BrpError::resource_not_present("bevy_remote::RemoteMethods"))?;
+        let rpc_info = match world.get_resource::<crate::schemas::open_rpc::InfoObjectResource>() {
+            Some(s) => s.deref().clone(),
+            None => InfoObject::default(),
         };
 
+        let servers: Vec<ServerObject> = remote_methods
+            .server_list()
+            .into_iter()
+            .map(|server| server.clone())
+            .collect();
+        let types = world.resource::<AppTypeRegistry>();
+        let types = types.read();
+        let extra_info = world.resource::<crate::schemas::SchemaTypesMetadata>();
+
+        let methods = remote_methods
+            .mappings
+            .iter()
+            .map(|(name, info)| {
+                let Some(type_info) = info.remote_type_info() else {
+                    return MethodObject {
+                        name: name.clone(),
+                        ..Default::default()
+                    };
+                };
+                #[cfg(feature = "documentation")]
+                let summary: Cow<'static, str> = types
+                    .get(type_info.command_type)
+                    .and_then(|t| t.type_info().docs().map(|s| s.into()))
+                    .unwrap_or_default();
+                #[cfg(not(feature = "documentation"))]
+                let summary: Cow<'static, str> = "".into();
+                let params = if type_info.arg_type.eq(&TypeId::of::<()>()) {
+                    [].into()
+                } else {
+                    if let Some(schema) = types
+                        .build_schema_for_type_id_with_definitions(type_info.arg_type, extra_info)
+                    {
+                        let parameter = Parameter {
+                            name: "input".into(),
+                            ..schema.into()
+                        };
+                        [parameter].into()
+                    } else {
+                        [].into()
+                    }
+                };
+                let result = if type_info.response_type.eq(&TypeId::of::<()>()) {
+                    None
+                } else {
+                    let result_schema = types.build_schema_for_type_id_with_definitions(
+                        type_info.response_type,
+                        extra_info,
+                    );
+                    result_schema.map(|schema| Parameter {
+                        name: "input".into(),
+                        ..schema.into()
+                    })
+                };
+                MethodObject {
+                    name: name.clone(),
+                    summary,
+                    params,
+                    result,
+                    ..Default::default()
+                }
+            })
+            .collect();
+
         let doc = OpenRpcDocument {
-            info: Default::default(),
-            methods: remote_methods.into(),
-            openrpc: "1.3.2".to_owned(),
+            info: rpc_info,
+            methods,
             servers,
+            openrpc: crate::schemas::open_rpc::OPENRPC_VERSION.into(),
         };
 
         Ok(doc)
@@ -986,14 +1030,12 @@ impl RemoteCommandSupport for RpcDiscoverCommand {
 /// Adds one or more components to an entity.
 #[derive(Reflect, Debug)]
 pub struct BevyInsertCommand;
-
-impl RemoteCommandSupport for BevyInsertCommand {
+impl RemoteCommand for BevyInsertCommand {
     type ParameterType = BrpInsertParams;
 
     type ResponseType = ();
 
     const RPC_PATH: &str = BRP_INSERT_METHOD;
-
     fn method_impl(
         input: Option<Self::ParameterType>,
         world: &mut World,

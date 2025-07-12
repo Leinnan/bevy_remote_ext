@@ -3,18 +3,18 @@
 use alloc::borrow::Cow;
 use bevy_platform::collections::HashMap;
 use bevy_reflect::{
-    prelude::ReflectDefault, serde::ReflectSerializer, GetTypeRegistration, Reflect, TypeInfo,
-    TypeRegistration, TypeRegistry,
+    GetTypeRegistration, Reflect, TypeInfo, TypeRegistration, TypeRegistry,
+    prelude::ReflectDefault, serde::ReflectSerializer,
 };
 use core::any::TypeId;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::schemas::{
+    SchemaTypesMetadata,
     reflect_info::{
         OptionalInfoReader, SchemaNumber, TypeDefinitionBuilder, TypeReferenceId, TypeReferencePath,
     },
-    SchemaTypesMetadata,
 };
 
 /// Helper trait for converting `TypeRegistration` to `JsonSchemaBevyType`
@@ -447,10 +447,10 @@ impl SchemaType {
 
 #[cfg(test)]
 mod tests {
-    use crate::schemas::open_rpc::OpenRpcDocument;
-    use crate::schemas::reflect_info::ReferenceLocation;
     use crate::schemas::CustomInternalSchemaData;
     use crate::schemas::ExternalSchemaSource;
+    use crate::schemas::open_rpc::OpenRpcDocument;
+    use crate::schemas::reflect_info::ReferenceLocation;
 
     use super::*;
     use bevy_ecs::prelude::ReflectComponent;

@@ -6,8 +6,8 @@ use bevy_ecs::{
 };
 use bevy_platform::collections::HashMap;
 use bevy_reflect::{
-    prelude::ReflectDefault, FromType, GetTypeRegistration, Reflect, ReflectDeserialize,
-    ReflectSerialize, TypeData, TypePath, TypeRegistration,
+    FromType, GetTypeRegistration, Reflect, ReflectDeserialize, ReflectSerialize, TypeData,
+    TypePath, TypeRegistration, prelude::ReflectDefault,
 };
 use core::any::TypeId;
 
