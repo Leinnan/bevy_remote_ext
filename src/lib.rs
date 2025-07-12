@@ -372,6 +372,7 @@ use bevy_app::{MainScheduleOrder, prelude::*};
 use bevy_derive::{Deref, DerefMut};
 use bevy_ecs::{
     entity::Entity,
+    error::BevyError,
     resource::Resource,
     schedule::{IntoScheduleConfigs, ScheduleLabel, SystemSet},
     system::{Commands, In, ResMut, System, SystemId},
@@ -769,6 +770,18 @@ pub struct BrpError {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[reflect(ignore)]
     pub data: Option<Value>,
+}
+
+impl alloc::fmt::Display for BrpError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+impl Into<BevyError> for BrpError {
+    fn into(self) -> BevyError {
+        BevyError::from(self.to_string())
+    }
 }
 
 impl BrpError {
