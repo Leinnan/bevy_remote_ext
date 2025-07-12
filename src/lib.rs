@@ -583,7 +583,7 @@ impl RemoteMethodSystemId {
 /// Holds all implementations of methods known to the server.
 ///
 /// Custom methods can be added to this list using [`RemoteMethods::insert`].
-#[derive(Debug, Resource, Default)]
+#[derive(Debug, Resource, Default, Clone)]
 pub struct RemoteMethods {
     mappings: HashMap<Cow<'static, str>, RemoteMethodSystemId>,
     servers: HashMap<TypeId, ServerObject>,
