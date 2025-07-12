@@ -412,12 +412,12 @@ impl JsonSchemaTypeLimit {
     }
 
     /// Check if the type limit should skip a type.
-    pub fn should_skip_type(&self, registered_types: &[Cow<'_, str>]) -> bool {
+    pub fn should_skip_type(&self, registered_types: &[&Cow<'_, str>]) -> bool {
         if !self.with.is_empty()
             && !self
                 .with
                 .iter()
-                .any(|c| registered_types.iter().any(|cc| c.eq(cc)))
+                .any(|c| registered_types.iter().any(|cc| c.eq(*cc)))
         {
             return true;
         }
@@ -425,7 +425,7 @@ impl JsonSchemaTypeLimit {
             && self
                 .without
                 .iter()
-                .any(|c| registered_types.iter().any(|cc| c.eq(cc)))
+                .any(|c| registered_types.iter().any(|cc| c.eq(*cc)))
         {
             return true;
         }
@@ -1365,15 +1365,15 @@ pub(crate) fn export_registry_types_typed(
             if filter.should_skip_for_crate(type_reg) {
                 return None;
             }
-            if !filter.type_limit.is_empty() {
-                let registered_types = metadata.get_registered_reflect_types(type_reg);
-                if filter
-                    .type_limit
-                    .should_skip_type(registered_types.as_slice())
-                {
-                    return None;
-                }
+            let registered_types = metadata.get_registered_reflect_types(type_reg);
+
+            if filter
+                .type_limit
+                .should_skip_type(registered_types.as_slice())
+            {
+                return None;
             }
+
             let type_id = type_reg.type_id();
             let mut dep_ids = types.get_type_dependencies(type_id);
             dep_ids.insert(type_id);
@@ -1697,7 +1697,7 @@ mod tests {
     use bevy_ecs::component::Component;
     use bevy_reflect::Reflect;
 
-    use crate::schemas::SchemaTypesMetadata;
+    use crate::schemas::{RegisterReflectJsonSchemas, SchemaTypesMetadata};
 
     use super::*;
 
@@ -1763,13 +1763,11 @@ mod tests {
         }
         let atr = AppTypeRegistry::default();
         {
-            use crate::schemas::ReflectJsonSchemaForceAsArray;
-
             let mut register = atr.write();
             register.register::<NestedStruct>();
             register.register::<ResourceStruct>();
             register.register::<bevy_math::Vec3>();
-            register.register_type_data::<bevy_math::Vec3, ReflectJsonSchemaForceAsArray>();
+            register.registry_force_schema_to_be_array::<bevy_math::Vec3>();
         }
         let value = NestedStruct {
             other: OtherStruct {
@@ -1847,12 +1845,10 @@ mod tests {
 
         let atr = AppTypeRegistry::default();
         {
-            use crate::schemas::ReflectJsonSchemaForceAsArray;
-
             let mut register = atr.write();
             register.register::<NestedStruct>();
             register.register::<bevy_math::Vec3>();
-            register.register_type_data::<bevy_math::Vec3, ReflectJsonSchemaForceAsArray>();
+            register.registry_force_schema_to_be_array::<bevy_math::Vec3>();
         }
         let mut world = World::new();
         world.insert_resource(atr);
